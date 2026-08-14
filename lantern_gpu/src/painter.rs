@@ -52,11 +52,14 @@ struct Globals {
 const INITIAL_INSTANCES: usize = 8192;
 
 pub trait TextPass {
-    fn render_text(
+    /// Render one layer's queued text (layer 0 = base, 1+ = overlays).
+    /// Interleaved with the painter's shape layers so popups cover text.
+    fn render_text_layer(
         &mut self,
         gpu: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
+        layer: u8,
     );
 }
 
@@ -935,9 +938,14 @@ impl Painter {
         clear_color: Color,
     ) -> Result<(), wgpu::SurfaceError> {
         let mut frame = gpu.begin_frame("Lantern 2D+Text Encoder")?;
-        self.render_into(gpu, &mut frame, clear_color);
         let view = frame.view().clone();
-        text.render_text(gpu, frame.encoder_mut(), &view);
+        // Interleave shape and text sub-passes per layer, so an overlay's
+        // panel (layer 1 shapes) draws over the base layer's text.
+        for layer in 0..self.layer_count() {
+            let clear = if layer == 0 { Some(clear_color) } else { None };
+            self.render_layer(layer, gpu, frame.encoder_mut(), &view, clear);
+            text.render_text_layer(gpu, frame.encoder_mut(), &view, layer);
+        }
         frame.submit(&gpu.queue);
         Ok(())
     }

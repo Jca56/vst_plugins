@@ -11,6 +11,7 @@ use lantern_ui::lantern_gpu::{Color, Rect};
 use lantern_ui::{Theme, Ui, UiEditor};
 use lantern_vst3::plugin::{Editor, ParamsHandle};
 
+use crate::synth::{osc, Waveform};
 use crate::{
     p_osc, M_KEYS, M_LEVEL_L, M_LEVEL_R, M_PEAK_L, M_PEAK_R, M_RMS_L, M_RMS_R, M_UI_NOTE,
     OSC_DETUNE, OSC_ENABLE, OSC_PITCH, OSC_VOICES, OSC_VOLUME, OSC_WAVE,
@@ -47,14 +48,49 @@ fn sub_panel(ui: &mut Ui, rect: Rect) {
     ui.painter.rect_border(rect, 10.0, 2.5, t.panel_border);
 }
 
+/// The shape window: today a still of the selected waveform, one day the
+/// live oscilloscope.
+fn wave_window(ui: &mut Ui, rect: Rect, wave: Waveform) {
+    let t = ui.theme;
+    ui.painter.rect_filled(rect, 8.0, t.well_deep);
+    // Zero line.
+    ui.painter.line(
+        rect.x + 6.0,
+        rect.center_y(),
+        rect.x + rect.w - 6.0,
+        rect.center_y(),
+        1.0,
+        t.track,
+    );
+
+    let n = 128;
+    let pad = 14.0;
+    let (w, half) = (rect.w - pad * 2.0, rect.h * 0.36);
+    let mut rng = 0x00C0_FFEEu32;
+    let mut prev: Option<(f32, f32)> = None;
+    ui.painter.push_clip(rect.inset(3.0));
+    for i in 0..=n {
+        let phase = i as f32 / n as f32;
+        let s = osc(wave, phase % 1.0, 1.0 / n as f32, &mut rng).clamp(-1.2, 1.2);
+        let x = rect.x + pad + phase * w;
+        let y = rect.center_y() - s * half;
+        if let Some((px, py)) = prev {
+            ui.painter.line(px, py, x, y, 2.5, t.accent);
+        }
+        prev = Some((x, y));
+    }
+    ui.painter.pop_clip();
+    ui.painter.rect_border(rect, 8.0, 2.5, t.panel_border);
+}
+
 impl Face {
     fn draw(&mut self, ui: &mut Ui) {
         ui.face();
 
         // Three rooms across the top: OSC 1 | OSC 2 | FILTER (still empty).
-        self.osc_panel(ui, Rect::new(44.0, 44.0, 406.0, 420.0), 0);
-        self.osc_panel(ui, Rect::new(481.0, 44.0, 406.0, 420.0), 1);
-        sub_panel(ui, Rect::new(918.0, 44.0, 406.0, 420.0));
+        self.osc_panel(ui, Rect::new(44.0, 44.0, 406.0, 520.0), 0);
+        self.osc_panel(ui, Rect::new(481.0, 44.0, 406.0, 520.0), 1);
+        sub_panel(ui, Rect::new(918.0, 44.0, 406.0, 520.0));
 
         // Output meter ends above the keyboard.
         ui.level_meter(
@@ -68,20 +104,26 @@ impl Face {
     }
 
     /// One oscillator room: power square + wave dropdown across the top,
-    /// then PITCH | VOLUME | (VOICES over DETUNE) left to right.
+    /// the wave window beneath (the oscilloscope-to-be), then
+    /// PITCH | VOLUME | (VOICES over DETUNE) left to right.
     fn osc_panel(&mut self, ui: &mut Ui, r: Rect, o: usize) {
         let t = ui.theme;
         sub_panel(ui, r);
 
-        ui.toggle(p_osc(o, OSC_ENABLE), Rect::new(r.x + 12.0, r.y + 12.0, 36.0, 36.0), "");
-        ui.dropdown(p_osc(o, OSC_WAVE), Rect::new(r.x + 58.0, r.y + 12.0, r.w - 70.0, 36.0));
+        ui.toggle(p_osc(o, OSC_ENABLE), Rect::new(r.x + 12.0, r.y + 14.0, 48.0, 48.0), "");
+        ui.dropdown(p_osc(o, OSC_WAVE), Rect::new(r.x + 68.0, r.y + 14.0, r.w - 82.0, 48.0));
 
-        ui.knob_cell(p_osc(o, OSC_PITCH), Rect::new(r.x + 14.0, r.y + 64.0, 122.0, 190.0), "PITCH");
-        ui.knob_cell(p_osc(o, OSC_VOLUME), Rect::new(r.x + 142.0, r.y + 64.0, 122.0, 190.0), "VOLUME");
+        let wave = Waveform::from_index(
+            (ui.params.normalized(p_osc(o, OSC_WAVE)) * 7.0).round() as usize,
+        );
+        wave_window(ui, Rect::new(r.x + 14.0, r.y + 74.0, r.w - 28.0, 130.0), wave);
 
-        ui.label_centered("VOICES", r.x + 330.0, r.y + 64.0, 21.0, t.text_dim);
-        ui.stepper_box(p_osc(o, OSC_VOICES), Rect::new(r.x + 294.0, r.y + 102.0, 72.0, 48.0));
-        ui.knob_cell(p_osc(o, OSC_DETUNE), Rect::new(r.x + 268.0, r.y + 170.0, 124.0, 190.0), "DETUNE");
+        ui.knob_cell(p_osc(o, OSC_PITCH), Rect::new(r.x + 14.0, r.y + 216.0, 122.0, 190.0), "PITCH");
+        ui.knob_cell(p_osc(o, OSC_VOLUME), Rect::new(r.x + 142.0, r.y + 216.0, 122.0, 190.0), "VOLUME");
+
+        ui.label_centered("VOICES", r.x + 330.0, r.y + 216.0, 21.0, t.text_dim);
+        ui.stepper_box(p_osc(o, OSC_VOICES), Rect::new(r.x + 294.0, r.y + 254.0, 72.0, 48.0));
+        ui.knob_cell(p_osc(o, OSC_DETUNE), Rect::new(r.x + 268.0, r.y + 322.0, 124.0, 190.0), "DETUNE");
     }
 
     /// C0..C3, playable: the mouse writes a gate the DSP edge-detects into

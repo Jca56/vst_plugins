@@ -101,10 +101,10 @@ fn detune_fmt(n: f64) -> String {
 }
 
 fn pitch_plain(n: f64) -> f64 {
-    (n * 96.0).round() - 48.0 // stepped semitones, +/- 4 octaves
+    (n * 8.0).round() - 4.0 // whole octaves, +/- 4 — keys stay keys
 }
 fn pitch_norm(p: f64) -> f64 {
-    (p + 48.0) / 96.0
+    (p + 4.0) / 8.0
 }
 fn pitch_fmt(n: f64) -> String {
     let p = pitch_plain(n);
@@ -289,13 +289,13 @@ impl Dsp for LanternSynthDsp {
         p!(0,  "O1 On",     "",   1.0,       1, None, None, Some(on_fmt)),
         p!(1,  "O1 Wave",   "",   2.0 / 7.0, 7, None, None, Some(osc_wave_fmt)),
         p!(2,  "O1 Volume", "%",  0.7,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(3,  "O1 Pitch",  "st", 0.5,      96, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
+        p!(3,  "O1 Pitch",  "oct", 0.5,      8, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
         p!(4,  "O1 Voices", "",   0.0,       6, Some(voices_plain), Some(voices_norm), Some(voices_fmt)),
         p!(5,  "O1 Detune", "ct", 0.10,      0, Some(detune_plain), Some(detune_norm), Some(detune_fmt)),
         p!(6,  "O2 On",     "",   1.0,       1, None, None, Some(on_fmt)),
         p!(7,  "O2 Wave",   "",   2.0 / 7.0, 7, None, None, Some(osc_wave_fmt)),
         p!(8,  "O2 Volume", "%",  0.7,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(9,  "O2 Pitch",  "st", 0.5,      96, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
+        p!(9,  "O2 Pitch",  "oct", 0.5,      8, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
         p!(10, "O2 Voices", "",   1.0 / 6.0, 6, Some(voices_plain), Some(voices_norm), Some(voices_fmt)),
         p!(11, "O2 Detune", "ct", 0.12,      0, Some(detune_plain), Some(detune_norm), Some(detune_fmt)),
         p!(12, "FM Amount", "%",  0.0,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
@@ -413,7 +413,7 @@ impl Dsp for LanternSynthDsp {
                 (params.normalized(p_osc(o, OSC_WAVE)) * 7.0).round() as usize,
             );
             set.voices = (params.plain(p_osc(o, OSC_VOICES)) as usize).clamp(1, MAX_UNISON);
-            let pitch_st = params.plain(p_osc(o, OSC_PITCH)) as f32;
+            let pitch_oct = params.plain(p_osc(o, OSC_PITCH)) as f32;
             let detune_ct = self.sm[S_DET0 + o];
             for k in 0..MAX_UNISON {
                 let spread = if set.voices <= 1 || k >= set.voices {
@@ -421,7 +421,7 @@ impl Dsp for LanternSynthDsp {
                 } else {
                     k as f32 / (set.voices - 1) as f32 * 2.0 - 1.0
                 };
-                set.ratios[k] = 2.0f32.powf((pitch_st + detune_ct * spread / 100.0) / 12.0);
+                set.ratios[k] = 2.0f32.powf(pitch_oct + detune_ct * spread / 1200.0);
             }
         }
 

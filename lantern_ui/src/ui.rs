@@ -65,6 +65,9 @@ pub(crate) struct DropdownState {
     id: u32,
     param: usize,
     anchor: Rect,
+    /// True on the frame the popup opened, so the opening click doesn't
+    /// immediately close it again.
+    fresh: bool,
 }
 
 /// Cross-frame widget state (which widget owns the current drag).
@@ -450,6 +453,7 @@ impl Ui<'_> {
                 id,
                 param,
                 anchor: rect,
+                fresh: true,
             });
         } else if hovered && !open && self.input.wheel != 0.0 {
             let steps = self.params.def(param).step_count.max(1);
@@ -487,9 +491,12 @@ impl Ui<'_> {
     }
 
     /// Draw and run the open dropdown's popup. Called by the editor shell
-    /// after the face has drawn, so the list sits above everything.
+    /// after the face has drawn; renders on layer 1 so it covers the base
+    /// layer's shapes AND text.
     pub(crate) fn draw_dropdown_overlay(&mut self) {
         let Some(d) = self.mem.dropdown else { return };
+        self.painter.set_layer(1);
+        self.text.set_layer(1);
         let t = self.theme;
         let def = self.params.def(d.param);
         let steps = def.step_count.max(1);
@@ -534,9 +541,13 @@ impl Ui<'_> {
             self.params.perform_edit(d.param, i as f64 / steps as f64);
             self.params.end_edit(d.param);
             self.mem.dropdown = None;
-        } else if self.input.pressed && !list.contains(mx, my) && !d.anchor.contains(mx, my) {
+        } else if self.input.pressed && !d.fresh && !list.contains(mx, my) {
+            // Click anywhere else — the box itself included — closes.
             self.mem.dropdown = None;
+        } else if let Some(open) = &mut self.mem.dropdown {
+            open.fresh = false;
         }
+        self.text.set_layer(0);
     }
 
     /// Number box adjusted by VERTICAL drag (up = more) — for counts and

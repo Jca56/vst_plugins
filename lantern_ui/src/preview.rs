@@ -69,8 +69,11 @@ pub fn render_png(
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("face-preview"),
             });
-        painter.render_pass(&gpu, &mut encoder, &view, theme.bg);
-        text.render_text(&gpu, &mut encoder, &view);
+        for layer in 0..painter.layer_count() {
+            let clear = if layer == 0 { Some(theme.bg) } else { None };
+            painter.render_layer(layer, &gpu, &mut encoder, &view, clear);
+            text.render_text_layer(&gpu, &mut encoder, &view, layer);
+        }
         gpu.queue.submit(Some(encoder.finish()));
     }
 

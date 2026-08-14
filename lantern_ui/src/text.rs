@@ -14,7 +14,10 @@ pub struct TextRenderer {
     atlas: GlyphAtlas,
     pipeline: GlyphPipeline,
     glyphs: HashMap<u64, (AtlasEntry, f32)>,
-    quads: Vec<Quad>,
+    /// Quads per render layer (0 = base, 1+ = overlays), matching the
+    /// painter's layers so popups cover base text.
+    layers: Vec<Vec<Quad>>,
+    layer: usize,
 }
 
 /// Cache key: char + size quantized to tenths of a pixel.
@@ -33,7 +36,16 @@ impl TextRenderer {
             atlas,
             pipeline,
             glyphs: HashMap::new(),
-            quads: Vec::new(),
+            layers: vec![Vec::new()],
+            layer: 0,
+        }
+    }
+
+    /// Queue subsequent text into `layer` (0 = base, 1+ = overlays).
+    pub fn set_layer(&mut self, layer: u8) {
+        self.layer = layer as usize;
+        while self.layers.len() <= self.layer {
+            self.layers.push(Vec::new());
         }
     }
 
@@ -81,7 +93,7 @@ impl TextRenderer {
         for ch in text.chars() {
             let (entry, advance) = self.glyph(gpu, ch, px);
             if entry.width > 0 {
-                self.quads.push(Quad {
+                self.layers[self.layer].push(Quad {
                     x: pen_x + entry.left as f32,
                     y: baseline - entry.top as f32,
                     w: entry.width as f32,
@@ -127,12 +139,19 @@ impl TextRenderer {
 }
 
 impl TextPass for TextRenderer {
-    fn render_text(
+    fn render_text_layer(
         &mut self,
         gpu: &GpuContext,
         encoder: &mut lantern_gpu::wgpu::CommandEncoder,
         view: &lantern_gpu::wgpu::TextureView,
+        layer: u8,
     ) {
+        let Some(quads) = self.layers.get_mut(layer as usize) else {
+            return;
+        };
+        if quads.is_empty() {
+            return;
+        }
         self.pipeline.render(
             &gpu.device,
             &gpu.queue,
@@ -140,8 +159,8 @@ impl TextPass for TextRenderer {
             view,
             gpu.width(),
             gpu.height(),
-            &self.quads,
+            quads,
         );
-        self.quads.clear();
+        quads.clear();
     }
 }
