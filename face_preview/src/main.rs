@@ -121,7 +121,7 @@ fn main() {
         let path = format!("{out}/synth.png");
         let bg = s::background();
         preview::render_png_with_background(
-            1776,
+            1700,
             1176,
             &theme,
             Some(&bg),

@@ -13,19 +13,18 @@ use lantern_vst3::plugin::{Editor, ParamsHandle};
 
 use crate::synth::{osc, svf_k, FilterMode, Waveform};
 use crate::{
-    p_lfo_rate, p_lfo_step, p_osc, LFOS, LFO_STEPS, M_KEYS, M_LEVEL_L, M_LEVEL_R, M_LFO_PHASE,
-    M_PEAK_L, M_PEAK_R, M_RMS_L, M_RMS_R, M_UI_NOTE, OSC_DETUNE, OSC_ENABLE, OSC_PITCH,
-    OSC_VOICES, OSC_VOLUME, OSC_WAVE, P_CUTOFF, P_FENV_AMT, P_FLT_ON, P_FLT_TYPE, P_LFO_DEPTH,
-    P_RES,
+    p_lfo_rate, p_lfo_step, p_osc, LFOS, LFO_STEPS, M_KEYS, M_LFO_PHASE, M_UI_NOTE, OSC_DETUNE,
+    OSC_ENABLE, OSC_PITCH, OSC_VOICES, OSC_VOLUME, OSC_WAVE, P_CUTOFF, P_FENV_AMT, P_FLT_ON,
+    P_FLT_TYPE, P_LFO_DEPTH, P_RES,
 };
 
-const WIN_W: u32 = 1776;
+const WIN_W: u32 = 1700;
 const WIN_H: u32 = 1176;
 
-/// Keyboard range: C2 to C4 in Live's naming — C3, Alva's home row, dead
-/// center.
-const KB_LOW: u8 = 48;
-const WHITE_KEYS: usize = 15; // 2 octaves + the top C
+/// Keyboard range: C1 to C5 in Live's naming — C3, Alva's home row, dead
+/// center, keys at proper piano proportions.
+const KB_LOW: u8 = 36;
+const WHITE_KEYS: usize = 29; // 4 octaves + the top C
 
 /// The fire experiment: Alva's background image, embedded raw (888x442
 /// RGBA), drawn under a translucent panel. If the verdict is "stupid",
@@ -37,7 +36,7 @@ pub fn background() -> BackgroundImage {
         rgba: BG_RGBA.to_vec(),
         width: 888,
         height: 442,
-        alpha: 0.58,
+        alpha: 0.75,
     }
 }
 
@@ -72,7 +71,14 @@ struct Face {
 /// Sub-panel fill: one step lighter than the face panel.
 fn sub_panel(ui: &mut Ui, rect: Rect) {
     let t = ui.theme;
-    ui.painter.rect_filled(rect, 10.0, Color::from_rgb8(27, 27, 27));
+    // Subtle top-to-bottom falloff: lighter at the top edge, sinking away.
+    ui.painter.rect_gradient_linear(
+        rect,
+        10.0,
+        std::f32::consts::FRAC_PI_2,
+        Color::from_rgb8(28, 28, 28),
+        Color::from_rgb8(19, 19, 19),
+    );
     ui.painter.rect_border(rect, 10.0, 2.5, t.panel_border);
 }
 
@@ -186,24 +192,16 @@ impl Face {
 
         // Three wide rooms across the top: OSC 1 | OSC 2 | FILTER.
         self.osc_panel(ui, Rect::new(44.0, 44.0, 500.0, 420.0), 0);
-        self.osc_panel(ui, Rect::new(574.0, 44.0, 500.0, 420.0), 1);
-        filter_panel(ui, Rect::new(1104.0, 44.0, 500.0, 420.0));
+        self.osc_panel(ui, Rect::new(600.0, 44.0, 500.0, 420.0), 1);
+        filter_panel(ui, Rect::new(1156.0, 44.0, 500.0, 420.0));
 
         // The fire hairline, back where it belongs.
-        ui.divider(44.0, 480.0, 1560.0);
+        ui.divider(44.0, 480.0, 1612.0);
 
         // The WOBBLE room, below the line on the right.
-        self.lfo_panel(ui, Rect::new(1104.0, 496.0, 500.0, 470.0));
+        self.lfo_panel(ui, Rect::new(1156.0, 496.0, 500.0, 470.0));
 
-        // Output meter runs from the top to the WOBBLE room's baseline.
-        ui.level_meter(
-            Rect::new(1652.0, 44.0, 80.0, 922.0),
-            (M_LEVEL_L, M_LEVEL_R),
-            (M_PEAK_L, M_PEAK_R),
-            (M_RMS_L, M_RMS_R),
-        );
-
-        self.keyboard(ui, Rect::new(44.0, 982.0, 1688.0, 150.0));
+        self.keyboard(ui, Rect::new(44.0, 982.0, 1612.0, 150.0));
     }
 
     /// Three drawable step LFOs: tabs, the drawing grid (drag to paint),
@@ -384,7 +382,7 @@ impl Face {
         // --- Interaction: press, glissando, release ---
         let (mx, my) = ui.mouse_pos();
         let mut over: Option<u8> = None;
-        'blacks: for oct in 0..2 {
+        'blacks: for oct in 0..4 {
             for &(pc, boundary) in &BLACKS {
                 if black_rect(black_x(oct, boundary)).contains(mx, my) {
                     over = Some(KB_LOW + oct as u8 * 12 + pc);
@@ -427,7 +425,7 @@ impl Face {
             }
             if i % 7 == 0 {
                 ui.label(
-                    &format!("C{}", i / 7 + 2),
+                    &format!("C{}", i / 7 + 1),
                     r.x + 7.0,
                     r.y + r.h - 28.0,
                     17.0,
@@ -435,7 +433,7 @@ impl Face {
                 );
             }
         }
-        for oct in 0..2 {
+        for oct in 0..4 {
             for &(pc, boundary) in &BLACKS {
                 let r = black_rect(black_x(oct, boundary));
                 ui.painter.rect_filled(r, 4.0, Color::from_rgb8(20, 20, 20));
