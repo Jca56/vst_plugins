@@ -2,10 +2,13 @@
 //! round at a time, checked in the preview harness as they land.
 //!
 //! Current state: three sub-panel rooms across the top (OSC 1, OSC 2,
-//! FILTER, no titles), output meter right, and a playable three-octave
-//! keyboard (C0..C3) spanning the whole bottom — click to sound notes
-//! (drag = glissando), keys light for whatever the voices are sounding,
-//! MIDI included, out-of-range notes folding into view by octaves.
+//! FILTER, no titles), three below the fire line (ENVELOPES with AMP/FLT
+//! tabs and the live ADSR curve, the OUT room with the drive curve, FM |
+//! DRIVE | GAIN cord targets, voice dots, and the family output meter,
+//! then the WOBBLE room), and a playable keyboard spanning the whole
+//! bottom — click to sound notes (drag = glissando), keys light for
+//! whatever the voices are sounding, MIDI included, out-of-range notes
+//! folding into view by octaves.
 
 use lantern_ui::lantern_gpu::{BackgroundImage, Color, Rect};
 use lantern_ui::{Theme, Ui, UiEditor};
@@ -13,10 +16,12 @@ use lantern_vst3::plugin::{Editor, ParamsHandle};
 
 use crate::synth::{osc, svf_k, FilterMode, Waveform};
 use crate::{
-    p_lfo_rate, p_lfo_step, p_mod_amt, p_mod_dest, p_mod_src, p_osc, D_CUTOFF, LFOS, LFO_STEPS,
-    MOD_DESTS, MOD_SLOTS, M_KEYS, M_LFO_PHASE, M_UI_NOTE, OSC_DETUNE, OSC_ENABLE, OSC_PITCH,
-    OSC_VOICES, OSC_VOLUME, OSC_WAVE, P_CUTOFF, P_FLT_KEYTRACK, P_FLT_ON, P_FLT_TYPE, P_LFO_DEPTH,
-    P_RES,
+    p_lfo_rate, p_lfo_step, p_mod_amt, p_mod_dest, p_mod_src, p_osc, D_CUTOFF, D_DRIVE, D_FM,
+    D_GAIN, LFOS, LFO_STEPS, MOD_DESTS, MOD_SLOTS, M_KEYS, M_LEVEL_L, M_LEVEL_R, M_LFO_PHASE,
+    M_PEAK_L, M_PEAK_R, M_RMS_L, M_RMS_R, M_UI_NOTE, M_VOICES, NUM_VOICES, OSC_DETUNE, OSC_ENABLE,
+    OSC_PITCH, OSC_VOICES, OSC_VOLUME, OSC_WAVE, P_AMP_A, P_AMP_D, P_AMP_R, P_AMP_S, P_CUTOFF,
+    P_DRIVE, P_FLT_A, P_FLT_D, P_FLT_KEYTRACK, P_FLT_ON, P_FLT_R, P_FLT_S, P_FLT_TYPE,
+    P_LFO_DEPTH, P_RES, P_WIDTH,
 };
 
 const WIN_W: u32 = 1700;
@@ -59,12 +64,25 @@ pub fn preview_face() -> impl FnMut(&mut Ui) {
     move |ui| face.draw(ui)
 }
 
+/// Preview variant with the WOBBLE room flipped to the MODS list.
+pub fn preview_face_mods() -> impl FnMut(&mut Ui) {
+    let mut face = Face {
+        show_mods: true,
+        ..Face::default()
+    };
+    move |ui| face.draw(ui)
+}
+
 #[derive(Default)]
 struct Face {
     /// Key currently held by the mouse (MIDI note).
     held: Option<u8>,
     /// Which LFO tab is showing.
     active_lfo: usize,
+    /// Which envelope tab is showing: 0 = amp, 1 = filter.
+    active_env: usize,
+    /// The WOBBLE room's MODS view: the whole matrix as an editable list.
+    show_mods: bool,
     /// Mid-drag in the LFO drawing grid.
     painting: bool,
     /// Knob cells that accept a mod cord, rebuilt every frame as the
@@ -258,7 +276,193 @@ fn wave_window(ui: &mut Ui, rect: Rect, wave: Waveform) {
     ui.painter.rect_border(rect, 8.0, 2.5, t.panel_border);
 }
 
+/// The envelope window: both ADSR curves live from the params — the active
+/// one bright, its sibling ghosted behind for context. Segment widths ride
+/// the knobs' own log-time mapping (a longer attack IS a wider ramp);
+/// sustain holds a fixed berth so the shape always reads, and the faint
+/// vertical is note-off.
+fn env_window(ui: &mut Ui, rect: Rect, active: usize) {
+    let t = ui.theme;
+    ui.painter.rect_filled(rect, 8.0, t.well_deep);
+
+    let pad = 14.0;
+    let (w, h) = (rect.w - pad * 2.0, rect.h - pad * 2.0);
+    let (x0, y0) = (rect.x + pad, rect.y + rect.h - pad);
+
+    let envs = [
+        [P_AMP_A, P_AMP_D, P_AMP_S, P_AMP_R],
+        [P_FLT_A, P_FLT_D, P_FLT_S, P_FLT_R],
+    ];
+    ui.painter.push_clip(rect.inset(3.0));
+    for pass in 0..2 {
+        let e = if pass == 0 { 1 - active } else { active };
+        let [pa, pd, ps, pr] = envs[e];
+        let na = ui.params.normalized(pa) as f32;
+        let nd = ui.params.normalized(pd) as f32;
+        let s = (ui.params.plain(ps) as f32 / 100.0).clamp(0.0, 1.0);
+        let nr = ui.params.normalized(pr) as f32;
+        let (wa, wd, ws, wr) = (0.06 + na, 0.06 + nd, 0.42, 0.06 + nr);
+        let total = wa + wd + ws + wr;
+        let xs = [
+            x0,
+            x0 + wa / total * w,
+            x0 + (wa + wd) / total * w,
+            x0 + (wa + wd + ws) / total * w,
+            x0 + w,
+        ];
+        let ys = [y0, y0 - h, y0 - h * s, y0 - h * s, y0];
+        if pass == 1 {
+            ui.painter
+                .line(xs[3], rect.y + 6.0, xs[3], rect.y + rect.h - 6.0, 1.0, t.track);
+        }
+        let (color, width) = if pass == 1 {
+            (t.accent, 2.5)
+        } else {
+            (t.text_dim.with_alpha(0.35), 2.0)
+        };
+        for i in 0..4 {
+            ui.painter.line(xs[i], ys[i], xs[i + 1], ys[i + 1], width, color);
+        }
+        if pass == 1 {
+            for i in 1..4 {
+                ui.painter.circle_filled(xs[i], ys[i], 4.0, color);
+            }
+        }
+    }
+    ui.painter.pop_clip();
+    ui.painter.rect_border(rect, 8.0, 2.5, t.panel_border);
+}
+
+/// The drive window: the output stage's transfer curve, from the very tanh
+/// the samples run through — the dim diagonal is unity, the gold curve is
+/// what the drive knob does to it.
+fn drive_window(ui: &mut Ui, rect: Rect) {
+    let t = ui.theme;
+    ui.painter.rect_filled(rect, 8.0, t.well_deep);
+
+    let y_mid = rect.center_y();
+    ui.painter.line(rect.x + 6.0, y_mid, rect.x + rect.w - 6.0, y_mid, 1.0, t.track);
+
+    let pad = 14.0;
+    let w = rect.w - pad * 2.0;
+    let half = rect.h * 0.40;
+    ui.painter.line(
+        rect.x + pad,
+        y_mid + half,
+        rect.x + pad + w,
+        y_mid - half,
+        1.0,
+        t.track,
+    );
+
+    let g = 1.0 + ui.params.plain(P_DRIVE) as f32 / 100.0 * 24.0;
+    let n = 96;
+    let mut prev: Option<(f32, f32)> = None;
+    ui.painter.push_clip(rect.inset(3.0));
+    for i in 0..=n {
+        let xn = i as f32 / n as f32 * 2.0 - 1.0;
+        let x = rect.x + pad + (xn * 0.5 + 0.5) * w;
+        let y = y_mid - (xn * g).tanh() * half;
+        if let Some((px, py)) = prev {
+            ui.painter.line(px, py, x, y, 2.5, t.accent);
+        }
+        prev = Some((x, y));
+    }
+    ui.painter.pop_clip();
+    ui.painter.rect_border(rect, 8.0, 2.5, t.panel_border);
+}
+
 impl Face {
+    /// The envelope room: AMP | FILTER tabs, the live curve window (the
+    /// same linear segments the voices run), and the active envelope's
+    /// four knobs.
+    fn env_panel(&mut self, ui: &mut Ui, r: Rect) {
+        let t = ui.theme;
+        sub_panel(ui, r);
+
+        let (mx, my) = ui.mouse_pos();
+        for (e, name) in ["AMP", "FILTER"].iter().enumerate() {
+            let tab = Rect::new(r.x + 12.0 + e as f32 * 146.0, r.y + 14.0, 140.0, 40.0);
+            let selected = e == self.active_env;
+            if ui.mouse_clicked() && tab.contains(mx, my) {
+                self.active_env = e;
+            }
+            ui.painter.rect_filled(
+                tab,
+                6.0,
+                if selected { t.accent.with_alpha(0.25) } else { t.well_deep },
+            );
+            ui.painter.rect_border(
+                tab,
+                6.0,
+                2.5,
+                if selected { t.accent } else { t.panel_border },
+            );
+            ui.label_centered(
+                name,
+                tab.center_x(),
+                tab.y + 8.0,
+                21.0,
+                if selected { t.text } else { t.text_dim },
+            );
+        }
+
+        env_window(ui, Rect::new(r.x + 16.0, r.y + 66.0, r.w - 32.0, 200.0), self.active_env);
+
+        let ps = if self.active_env == 0 {
+            [P_AMP_A, P_AMP_D, P_AMP_S, P_AMP_R]
+        } else {
+            [P_FLT_A, P_FLT_D, P_FLT_S, P_FLT_R]
+        };
+        let start = r.x + (r.w - 468.0) * 0.5;
+        for (i, (p, label)) in ps
+            .iter()
+            .zip(["ATTACK", "DECAY", "SUSTAIN", "RELEASE"])
+            .enumerate()
+        {
+            ui.knob_cell(
+                *p,
+                Rect::new(start + i as f32 * 118.0, r.y + 276.0, 114.0, 186.0),
+                label,
+            );
+        }
+    }
+
+    /// The OUT room: voice dots up top (one per voice, lit while it
+    /// sounds), the drive transfer curve with the stereo WIDTH knob beside
+    /// it, FM | DRIVE | GAIN — every one a cord target — and the family
+    /// output meter on the right.
+    fn out_panel(&mut self, ui: &mut Ui, r: Rect) {
+        let t = ui.theme;
+        sub_panel(ui, r);
+
+        ui.label("VOICES", r.x + 18.0, r.y + 14.0, 19.0, t.text_dim);
+        let sounding = ui.params.meter(M_VOICES) as usize;
+        for v in 0..NUM_VOICES {
+            let color = if v < sounding { t.accent } else { t.track };
+            ui.painter
+                .circle_filled(r.x + 24.0 + v as f32 * 15.0, r.y + 48.0, 4.5, color);
+        }
+
+        drive_window(ui, Rect::new(r.x + 16.0, r.y + 66.0, 232.0, 200.0));
+        ui.knob_cell(P_WIDTH, Rect::new(r.x + 256.0, r.y + 66.0, 114.0, 200.0), "WIDTH");
+
+        for (i, (dest, label)) in [(D_FM, "FM 2→1"), (D_DRIVE, "DRIVE"), (D_GAIN, "GAIN")]
+            .iter()
+            .enumerate()
+        {
+            let cell = Rect::new(r.x + 16.0 + i as f32 * 118.0, r.y + 276.0, 114.0, 186.0);
+            self.dest_knob(ui, *dest, cell, label);
+        }
+
+        ui.level_meter(
+            Rect::new(r.x + r.w - 114.0, r.y + 14.0, 98.0, 448.0),
+            (M_LEVEL_L, M_LEVEL_R),
+            (M_PEAK_L, M_PEAK_R),
+            (M_RMS_L, M_RMS_R),
+        );
+    }
+
     fn draw(&mut self, ui: &mut Ui) {
         ui.face_glass(0.72);
         self.targets.clear();
@@ -271,7 +475,9 @@ impl Face {
         // The fire hairline, back where it belongs.
         ui.divider(44.0, 480.0, 1612.0);
 
-        // The WOBBLE room, below the line on the right.
+        // Below the line: ENVELOPES | OUT | the WOBBLE room.
+        self.env_panel(ui, Rect::new(44.0, 496.0, 500.0, 470.0));
+        self.out_panel(ui, Rect::new(600.0, 496.0, 500.0, 470.0));
         self.lfo_panel(ui, Rect::new(1156.0, 496.0, 500.0, 470.0));
 
         self.mod_badges(ui);
@@ -282,6 +488,7 @@ impl Face {
     /// Three drawable step LFOs: tabs (drag one onto a knob to route it),
     /// the drawing grid, tempo-synced RATE, the classic DEPTH wobble on
     /// LFO 1, and the active tab's mod-matrix routes as editable chips.
+    /// The MODS tab at top right flips the room to the full matrix list.
     fn lfo_panel(&mut self, ui: &mut Ui, r: Rect) {
         let t = ui.theme;
         sub_panel(ui, r);
@@ -289,10 +496,11 @@ impl Face {
         let (mx, my) = ui.mouse_pos();
         for l in 0..LFOS {
             let tab = Rect::new(r.x + 12.0 + l as f32 * 96.0, r.y + 14.0, 90.0, 40.0);
-            let selected = l == self.active_lfo;
+            let selected = l == self.active_lfo && !self.show_mods;
             let color = lfo_color(t, l);
             if ui.mouse_clicked() && tab.contains(mx, my) {
                 self.active_lfo = l;
+                self.show_mods = false;
                 // Arm a drag: it becomes the assignment cord if the mouse
                 // travels; a motionless click just switched tabs.
                 self.drag = Some(ModDrag {
@@ -321,6 +529,35 @@ impl Face {
             );
         }
 
+        // The MODS tab, top right: flip to the whole matrix as a list.
+        let mtab = Rect::new(r.x + r.w - 102.0, r.y + 14.0, 90.0, 40.0);
+        if ui.mouse_clicked() && mtab.contains(mx, my) {
+            self.show_mods = true;
+        }
+        ui.painter.rect_filled(
+            mtab,
+            6.0,
+            if self.show_mods { t.accent.with_alpha(0.25) } else { t.well_deep },
+        );
+        ui.painter.rect_border(
+            mtab,
+            6.0,
+            2.5,
+            if self.show_mods { t.accent } else { t.panel_border },
+        );
+        ui.label_centered(
+            "MODS",
+            mtab.center_x(),
+            mtab.y + 8.0,
+            21.0,
+            if self.show_mods { t.text } else { t.text_dim },
+        );
+
+        if self.show_mods {
+            self.mod_list(ui, Rect::new(r.x + 16.0, r.y + 66.0, r.w - 32.0, r.h - 82.0));
+            return;
+        }
+
         let l = self.active_lfo;
         self.lfo_grid(ui, Rect::new(r.x + 16.0, r.y + 66.0, r.w - 32.0, 200.0), l);
 
@@ -336,6 +573,45 @@ impl Face {
             l,
             Rect::new(chips_x, r.y + 276.0, r.x + r.w - 16.0 - chips_x, 186.0),
         );
+    }
+
+    /// The MODS view: all eight matrix slots as rows — source and
+    /// destination dropdowns, draggable amount, an x to unplug. Free slots
+    /// sit dim, holding their place, so rows never jump around.
+    fn mod_list(&mut self, ui: &mut Ui, area: Rect) {
+        let t = ui.theme;
+        let (mx, my) = ui.mouse_pos();
+        let pitch = (area.h / MOD_SLOTS as f32).min(48.0);
+        for s in 0..MOD_SLOTS {
+            let y = area.y + s as f32 * pitch;
+            let row_h = pitch - 8.0;
+            let dest = ((ui.params.normalized(p_mod_dest(s)) * 10.0).round() as usize).min(10);
+            if dest == 0 {
+                ui.painter.rect_filled(
+                    Rect::new(area.x, y, area.w, row_h),
+                    6.0,
+                    t.well_deep.with_alpha(0.5),
+                );
+                continue;
+            }
+            let src = ((ui.params.normalized(p_mod_src(s)) * 2.0).round() as usize).min(LFOS - 1);
+            ui.painter
+                .circle_filled(area.x + 8.0, y + row_h * 0.5, 6.0, lfo_color(t, src));
+            ui.dropdown(p_mod_src(s), Rect::new(area.x + 22.0, y, 108.0, row_h));
+            ui.dropdown(p_mod_dest(s), Rect::new(area.x + 138.0, y, 150.0, row_h));
+            ui.drag_box(p_mod_amt(s), Rect::new(area.x + 296.0, y, 120.0, row_h));
+            let xr = Rect::new(area.x + 428.0, y + (row_h - 26.0) * 0.5, 26.0, 26.0);
+            let hov = xr.contains(mx, my);
+            if hov && ui.mouse_clicked() {
+                let p = p_mod_dest(s);
+                ui.params.begin_edit(p);
+                ui.params.perform_edit(p, 0.0);
+                ui.params.end_edit(p);
+            }
+            let xc = if hov { t.text } else { t.text_dim };
+            ui.painter.line(xr.x + 8.0, xr.y + 8.0, xr.x + 18.0, xr.y + 18.0, 2.5, xc);
+            ui.painter.line(xr.x + 18.0, xr.y + 8.0, xr.x + 8.0, xr.y + 18.0, 2.5, xc);
+        }
     }
 
     /// The active LFO's matrix routes: one chip per route — destination,
@@ -400,7 +676,8 @@ impl Face {
     }
 
     /// A colored dot on every knob the matrix — or the grandfathered DEPTH
-    /// wobble — is modulating; the color names the source LFO.
+    /// wobble — is modulating; the color names the source LFO. The dots sit
+    /// in the arc's bottom gap, between the knob and its value box.
     fn mod_badges(&mut self, ui: &mut Ui) {
         let mut routed = [(0usize, 0usize); MOD_SLOTS + 1];
         let mut n = 0;
@@ -418,20 +695,26 @@ impl Face {
             n += 1;
         }
         let t = ui.theme;
-        let mut stacked = [0usize; 16];
-        for &(dest, src) in &routed[..n] {
-            let Some((ti, &(_, cell))) = self
-                .targets
-                .iter()
-                .enumerate()
-                .find(|(_, (d, _))| *d == dest)
-            else {
+        for &(dest_target, cell) in &self.targets {
+            let mut srcs = [0usize; MOD_SLOTS + 1];
+            let mut k = 0;
+            for &(dest, src) in &routed[..n] {
+                if dest == dest_target {
+                    srcs[k] = src;
+                    k += 1;
+                }
+            }
+            if k == 0 {
                 continue;
-            };
-            let k = stacked[ti.min(15)];
-            stacked[ti.min(15)] += 1;
-            let (cx, cy) = (cell.x + cell.w - 12.0 - k as f32 * 16.0, cell.y + 12.0);
-            ui.painter.circle_filled(cx, cy, 6.0, lfo_color(t, src));
+            }
+            // Mirror knob_cell's geometry: dot row just under the knob,
+            // centered, clear of the value box.
+            let frame = ((cell.h - 86.0) * 0.5).max(20.0);
+            let y = cell.y + 2.0 * frame + 38.0;
+            for (i, &src) in srcs[..k].iter().enumerate() {
+                let x = cell.center_x() + (i as f32 - (k - 1) as f32 * 0.5) * 16.0;
+                ui.painter.circle_filled(x, y, 6.0, lfo_color(t, src));
+            }
         }
     }
 

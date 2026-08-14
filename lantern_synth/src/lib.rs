@@ -3,6 +3,7 @@
 //!
 //! Built for dubstep bass:
 //!   - detuned saws (Osc1 + Osc2)   -> Reese bass
+//!   - unison copies panned wide    -> true stereo (subs stay center)
 //!   - global LFO -> filter cutoff  -> wobble bass
 //!   - FM cross-mod + drive         -> growl / grit
 //!
@@ -16,9 +17,9 @@ use lantern_vst3::plugin::{
 };
 use synth::{EnvStage, FilterMode, OscSettings, Voice, VoiceParams, Waveform, MAX_UNISON};
 
-pub use face::{background, preview_face};
+pub use face::{background, preview_face, preview_face_mods};
 
-const NUM_VOICES: usize = 16;
+pub const NUM_VOICES: usize = 16;
 
 // Parameter indices (== ids; renumbered once while Blacklight was young and
 // no projects existed — from here on they are forever).
@@ -65,6 +66,10 @@ pub const LFO_DIV_BEATS: [f64; 8] = [16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125]
 /// Keytracking for the comb filter modes: the comb follows the played note,
 /// the cutoff knob becomes an offset around it (knob center = the note).
 pub const P_FLT_KEYTRACK: usize = 82;
+/// Stereo width: how far the unison copies pan across the field (id 107).
+/// 0% collapses exactly to the old mono sum; a 1-voice osc is always
+/// center, so subs stay mono at any width.
+pub const P_WIDTH: usize = 107;
 /// Mod matrix: 8 slots, each source (LFO 1-3) + destination + bipolar amount
 /// (ids 83..=106). A slot whose destination is Off is a free slot.
 pub const MOD_SLOTS: usize = 8;
@@ -78,8 +83,9 @@ pub const fn p_mod_amt(s: usize) -> usize {
     85 + s * 3
 }
 /// Mod destinations: (target param, face name). Index 0 = not routed.
-/// Amounts act in the target knob's own normalized space — +100% swings the
-/// full knob range — so every destination modulates the way its knob turns.
+/// Amounts act in the target knob's own normalized space — a full-height
+/// bar at +100% swings the full knob range — so every destination
+/// modulates the way its knob turns.
 pub const MOD_DESTS: [(usize, &str); 11] = [
     (usize::MAX, "Off"),
     (p_osc(0, OSC_VOLUME), "O1 VOL"),
@@ -319,10 +325,12 @@ pub struct LanternSynthDsp {
     sm: [f32; 12],
     snap: bool,
     coef: f32,
-    // Output metering (family standard).
+    // Output metering (family standard), per channel.
     env_l: f32,
+    env_r: f32,
     env_decay: f32,
     ms_l: f32,
+    ms_r: f32,
     ms_coef: f32,
     /// Last seen UI-keyboard gate (note+1, 0 = none), for edge detection.
     ui_note_prev: i32,
@@ -381,7 +389,7 @@ impl Dsp for LanternSynthDsp {
     };
 
     const PARAMS: &'static [ParamDef] = &{
-        let mut all = [BASE_PARAMS[0]; 31 + LFOS * (LFO_STEPS + 1) + 1 + MOD_SLOTS * 3];
+        let mut all = [BASE_PARAMS[0]; 31 + LFOS * (LFO_STEPS + 1) + 1 + MOD_SLOTS * 3 + 1];
         let mut i = 0;
         while i < 31 {
             all[i] = BASE_PARAMS[i];
@@ -478,6 +486,18 @@ impl Dsp for LanternSynthDsp {
             };
             m += 1;
         }
+        all[P_WIDTH] = ParamDef {
+            id: P_WIDTH as u32,
+            title: "Width",
+            short_title: "Width",
+            units: "%",
+            default_normalized: 1.0,
+            step_count: 0,
+            can_automate: true,
+            to_plain: Some(pct_plain),
+            from_plain: Some(pct_norm),
+            format: Some(pct_fmt),
+        };
         all
     };
 
@@ -589,8 +609,10 @@ impl LanternSynthDsp {
             snap: true,
             coef: 0.0,
             env_l: 0.0,
+            env_r: 0.0,
             env_decay: 1.0,
             ms_l: 0.0,
+            ms_r: 0.0,
             ms_coef: 0.0,
             ui_note_prev: 0,
         }
@@ -613,7 +635,9 @@ impl LanternSynthDsp {
         self.lfo_phases = [0.0; LFOS];
         self.snap = true;
         self.env_l = 0.0;
+        self.env_r = 0.0;
         self.ms_l = 0.0;
+        self.ms_r = 0.0;
         self.ui_note_prev = 0;
     }
 
@@ -682,8 +706,9 @@ impl LanternSynthDsp {
         };
 
         // The mod matrix: live slots as (source LFO, destination, amount).
-        // The drawn shape reads bipolar (half-height = no change) and the
-        // amount is a fraction of the destination knob's full range.
+        // The drawn shape reads unipolar: bar height, times the amount, is
+        // how far the knob moves from where it sits — a 0..1 ramp at +100%
+        // on a zeroed volume sweeps it 0..100%. Negative amounts pull down.
         let mut routes = [(0usize, 0usize, 0.0f32); MOD_SLOTS];
         let mut nroutes = 0usize;
         for s in 0..MOD_SLOTS {
@@ -704,22 +729,26 @@ impl LanternSynthDsp {
         // (each ratio is a powf — per-sample would melt the budget).
         let mut det_off = [0.0f32; 2];
         for &(src, dest, amt) in &routes[..nroutes] {
-            let bip = shape_at(&lfo_steps[src], self.lfo_phases[src]) * 2.0 - 1.0;
+            let shp = shape_at(&lfo_steps[src], self.lfo_phases[src]);
             if dest == D_O1DET {
-                det_off[0] += bip * amt * 100.0;
+                det_off[0] += shp * amt * 100.0;
             } else if dest == D_O2DET {
-                det_off[1] += bip * amt * 100.0;
+                det_off[1] += shp * amt * 100.0;
             }
         }
 
         // Per-block oscillator settings: pitch + unison detune spread baked
-        // into per-copy frequency ratios (powf lives here, not per sample).
+        // into per-copy frequency ratios, stereo width into per-copy pan
+        // gains (powf and trig live here, not per sample). Equal-power law
+        // with a √2 center, so width 0 sounds exactly like the mono days.
+        let width = (params.plain(P_WIDTH) as f32 / 100.0).clamp(0.0, 1.0);
         let mut osc_settings = [OscSettings {
             enabled: false,
             wave: Waveform::Saw,
             volume: 0.0,
             voices: 1,
             ratios: [1.0; MAX_UNISON],
+            gains: [(1.0, 1.0); MAX_UNISON],
         }; 2];
         for (o, set) in osc_settings.iter_mut().enumerate() {
             set.enabled = params.normalized(p_osc(o, OSC_ENABLE)) >= 0.5;
@@ -736,6 +765,11 @@ impl LanternSynthDsp {
                     k as f32 / (set.voices - 1) as f32 * 2.0 - 1.0
                 };
                 set.ratios[k] = 2.0f32.powf(pitch_oct + detune_ct * spread / 1200.0);
+                let th = (spread * width + 1.0) * std::f32::consts::FRAC_PI_4;
+                set.gains[k] = (
+                    std::f32::consts::SQRT_2 * th.cos(),
+                    std::f32::consts::SQRT_2 * th.sin(),
+                );
             }
         }
 
@@ -763,7 +797,8 @@ impl LanternSynthDsp {
         let num_samples = ch_l.len();
 
         let mut next_event = 0usize;
-        let mut block_peak = 0.0f32;
+        let mut block_peak_l = 0.0f32;
+        let mut block_peak_r = 0.0f32;
 
         for i in 0..num_samples {
             // Sample-accurate note events.
@@ -804,13 +839,15 @@ impl LanternSynthDsp {
             };
 
             // All three LFO shapes, per sample; LFO 1 doubles as the classic
-            // hardwired wobble (the DEPTH knob).
+            // hardwired wobble (the DEPTH knob), unipolar like the matrix:
+            // the cutoff knob is the floor, drawn height opens the filter
+            // up to DEPTH octaves above it.
             let mut shp = [0.0f32; LFOS];
             for l in 0..LFOS {
                 shp[l] = shape_at(&lfo_steps[l], self.lfo_phases[l]);
                 self.lfo_phases[l] = (self.lfo_phases[l] + lfo_inc[l]).fract();
             }
-            let lfo_value = shp[0] * 2.0 - 1.0;
+            let lfo_value = shp[0];
 
             // Matrix offsets, accumulated per destination in knob space.
             let mut drive = self.sm[S_DRIVE];
@@ -818,7 +855,7 @@ impl LanternSynthDsp {
             if nroutes > 0 {
                 let mut off = [0.0f32; 11];
                 for &(src, dest, amt) in &routes[..nroutes] {
-                    off[dest] += (shp[src] * 2.0 - 1.0) * amt;
+                    off[dest] += shp[src] * amt;
                 }
                 vp.osc[0].volume = (vp.osc[0].volume + off[D_O1VOL]).clamp(0.0, 1.0);
                 vp.osc[1].volume = (vp.osc[1].volume + off[D_O2VOL]).clamp(0.0, 1.0);
@@ -837,32 +874,43 @@ impl LanternSynthDsp {
                 }
             }
 
-            let mut sum = 0.0;
+            let mut sum_l = 0.0;
+            let mut sum_r = 0.0;
             for v in self.voices.iter_mut() {
-                sum += v.render(&vp, lfo_value);
+                let (l, r) = v.render(&vp, lfo_value);
+                sum_l += l;
+                sum_r += r;
             }
 
             // Soft-clip (drive) then output gain; tanh keeps it bounded.
-            let out = (sum * (1.0 + drive * 24.0)).tanh() * gain;
+            let d = 1.0 + drive * 24.0;
+            let out_l = (sum_l * d).tanh() * gain;
+            let out_r = (sum_r * d).tanh() * gain;
 
-            ch_l[i] = out;
             if let Some(ch_r) = ch_r.as_mut() {
-                ch_r[i] = out;
+                ch_l[i] = out_l;
+                ch_r[i] = out_r;
+            } else {
+                // Mono host: fold the image down instead of dropping half.
+                ch_l[i] = (out_l + out_r) * 0.5;
             }
 
-            let a = out.abs();
+            let a = out_l.abs();
             self.env_l = if a > self.env_l { a } else { self.env_l * self.env_decay };
-            block_peak = block_peak.max(a);
-            self.ms_l += (out * out - self.ms_l) * self.ms_coef;
+            block_peak_l = block_peak_l.max(a);
+            let a = out_r.abs();
+            self.env_r = if a > self.env_r { a } else { self.env_r * self.env_decay };
+            block_peak_r = block_peak_r.max(a);
+            self.ms_l += (out_l * out_l - self.ms_l) * self.ms_coef;
+            self.ms_r += (out_r * out_r - self.ms_r) * self.ms_coef;
         }
 
-        let rms = self.ms_l.sqrt() as f64;
         meters.set(M_LEVEL_L, self.env_l as f64);
-        meters.set(M_LEVEL_R, self.env_l as f64);
-        meters.set(M_PEAK_L, meters.get(M_PEAK_L).max(block_peak as f64));
-        meters.set(M_PEAK_R, meters.get(M_PEAK_R).max(block_peak as f64));
-        meters.set(M_RMS_L, rms);
-        meters.set(M_RMS_R, rms);
+        meters.set(M_LEVEL_R, self.env_r as f64);
+        meters.set(M_PEAK_L, meters.get(M_PEAK_L).max(block_peak_l as f64));
+        meters.set(M_PEAK_R, meters.get(M_PEAK_R).max(block_peak_r as f64));
+        meters.set(M_RMS_L, self.ms_l.sqrt() as f64);
+        meters.set(M_RMS_R, self.ms_r.sqrt() as f64);
         meters.set(
             M_VOICES,
             self.voices.iter().filter(|v| v.active).count() as f64,

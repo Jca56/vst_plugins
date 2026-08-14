@@ -118,7 +118,11 @@ fn main() {
         store.set(s::p_mod_src(2), 1.0);
         store.set(s::p_mod_dest(2), s::D_RES as f64 / 10.0);
         store.set(s::p_mod_amt(2), 0.30);
+        store.set(s::p_mod_src(3), 0.0);
+        store.set(s::p_mod_dest(3), s::D_DRIVE as f64 / 10.0);
+        store.set(s::p_mod_amt(3), 0.70);
         store.set(s::P_LFO_DEPTH, 0.25);
+        store.set(s::P_DRIVE, 0.3); // bend the OUT room's transfer curve
         store.set(s::P_FLT_TYPE, 1.0); // Comb -
         meters.set(s::M_LEVEL_L, 0.55);
         meters.set(s::M_LEVEL_R, 0.52);
@@ -145,6 +149,21 @@ fn main() {
             s::preview_face(),
         )
         .expect("render synth");
+        println!("wrote {path}");
+
+        // Same staging, WOBBLE room flipped to the MODS list.
+        let path = format!("{out}/synth_mods.png");
+        preview::render_png_with_background(
+            1700,
+            1176,
+            &theme,
+            Some(&bg),
+            params,
+            90,
+            &path,
+            s::preview_face_mods(),
+        )
+        .expect("render synth mods view");
         println!("wrote {path}");
     }
 }

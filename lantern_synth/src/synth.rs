@@ -1,7 +1,9 @@
-//! The Lantern synth voice: ported intact from the original nih-plug-era
-//! Lantern. Per voice: Osc1 + Osc2 with FM cross-mod (osc2 phase-modulates
-//! osc1) -> mix -> TPT state-variable low-pass, cutoff driven by a filter
-//! envelope and the global LFO -> amp envelope * velocity. Dependency-free.
+//! The Lantern synth voice: ported from the original nih-plug-era Lantern,
+//! now true stereo. Per voice: Osc1 + Osc2 with FM cross-mod (osc2
+//! phase-modulates osc1), unison copies panned across the field -> stereo
+//! mix -> per-channel TPT state-variable filter / comb, cutoff driven by a
+//! filter envelope and the global LFO -> amp envelope * velocity.
+//! Dependency-free.
 
 use std::f32::consts::{PI, TAU};
 
@@ -40,8 +42,9 @@ impl Waveform {
 pub const MAX_UNISON: usize = 7;
 
 /// One oscillator's per-block settings. `ratios` carries the frequency
-/// ratio of each unison copy with pitch and detune spread baked in, so the
-/// per-sample path never touches powf.
+/// ratio of each unison copy with pitch and detune spread baked in, and
+/// `gains` its (left, right) pan gains with the stereo width baked in, so
+/// the per-sample path never touches powf or trig.
 #[derive(Clone, Copy)]
 pub struct OscSettings {
     pub enabled: bool,
@@ -49,6 +52,7 @@ pub struct OscSettings {
     pub volume: f32,
     pub voices: usize,
     pub ratios: [f32; MAX_UNISON],
+    pub gains: [(f32, f32); MAX_UNISON],
 }
 
 /// Per-sample scalar snapshot of everything a voice needs.
@@ -83,8 +87,8 @@ pub struct Voice {
     rng: u32,
     pub amp_env: Adsr,
     pub flt_env: Adsr,
-    filter: Svf,
-    comb: Comb,
+    filter: [Svf; 2],
+    comb: [Comb; 2],
 }
 
 impl Voice {
@@ -97,15 +101,17 @@ impl Voice {
             rng: 0x2F6E_2B1F,
             amp_env: Adsr::new(),
             flt_env: Adsr::new(),
-            filter: Svf::new(),
-            comb: Comb::new(),
+            filter: [Svf::new(), Svf::new()],
+            comb: [Comb::new(), Comb::new()],
         }
     }
 
-    /// Size the comb's delay line for this sample rate. Must run before
+    /// Size the combs' delay lines for this sample rate. Must run before
     /// processing; a comb with no buffer passes audio through dry.
     pub fn prepare(&mut self, sr: f32) {
-        self.comb.alloc(sr);
+        for c in &mut self.comb {
+            c.alloc(sr);
+        }
     }
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {
@@ -121,8 +127,12 @@ impl Voice {
                 self.phases[o][k] = (h >> 8) as f32 / 16_777_216.0;
             }
         }
-        self.filter.reset();
-        self.comb.reset();
+        for f in &mut self.filter {
+            f.reset();
+        }
+        for c in &mut self.comb {
+            c.reset();
+        }
         self.amp_env.trigger();
         self.flt_env.trigger();
     }
@@ -132,26 +142,40 @@ impl Voice {
         self.flt_env.release();
     }
 
-    /// One oscillator: sum of its unison copies (equal-power normalized),
-    /// all phase-modulated together by `pm`.
-    fn run_osc(&mut self, oi: usize, set: &OscSettings, base: f32, sr: f32, pm: f32) -> f32 {
+    /// One oscillator: its unison copies panned across the field by their
+    /// baked-in gains, all phase-modulated together by `pm`. Returns
+    /// (left, right, mono) — the mono sum feeds FM so the modulator stays
+    /// image-stable however wide the spread.
+    fn run_osc(
+        &mut self,
+        oi: usize,
+        set: &OscSettings,
+        base: f32,
+        sr: f32,
+        pm: f32,
+    ) -> (f32, f32, f32) {
         if !set.enabled {
-            return 0.0;
+            return (0.0, 0.0, 0.0);
         }
         let n = set.voices.clamp(1, MAX_UNISON);
-        let mut sum = 0.0;
+        let (mut l, mut r, mut m) = (0.0, 0.0, 0.0);
         for k in 0..n {
             let dt = (base * set.ratios[k] / sr).min(0.49);
             let ph = (self.phases[oi][k] + pm).rem_euclid(1.0);
-            sum += osc(set.wave, ph, dt, &mut self.rng);
+            let s = osc(set.wave, ph, dt, &mut self.rng);
+            let (gl, gr) = set.gains[k];
+            l += s * gl;
+            r += s * gr;
+            m += s;
             self.phases[oi][k] = (self.phases[oi][k] + dt).fract();
         }
-        sum / (n as f32).sqrt()
+        let norm = (n as f32).sqrt();
+        (l / norm, r / norm, m / norm)
     }
 
-    pub fn render(&mut self, p: &VoiceParams, lfo_value: f32) -> f32 {
+    pub fn render(&mut self, p: &VoiceParams, lfo_value: f32) -> (f32, f32) {
         if !self.active {
-            return 0.0;
+            return (0.0, 0.0);
         }
 
         let amp = self.amp_env.process(p.amp_a, p.amp_d, p.amp_s, p.amp_r, p.sr);
@@ -159,16 +183,20 @@ impl Voice {
         // The amp envelope owns the voice's lifetime.
         if self.amp_env.stage == EnvStage::Idle {
             self.active = false;
-            return 0.0;
+            return (0.0, 0.0);
         }
 
         let base = midi_to_freq(self.note);
-        // Osc 2 first: it phase-modulates Osc 1 (the "FM").
-        let s2 = self.run_osc(1, &p.osc[1], base, p.sr, 0.0);
-        let s1 = self.run_osc(0, &p.osc[0], base, p.sr, s2 * p.fm_amount);
-        let mixed = s1 * p.osc[0].volume + s2 * p.osc[1].volume;
+        // Osc 2 first: its mono sum phase-modulates Osc 1 (the "FM").
+        let (l2, r2, m2) = self.run_osc(1, &p.osc[1], base, p.sr, 0.0);
+        let (l1, r1, _) = self.run_osc(0, &p.osc[0], base, p.sr, m2 * p.fm_amount);
+        let mixed = [
+            l1 * p.osc[0].volume + l2 * p.osc[1].volume,
+            r1 * p.osc[0].volume + r2 * p.osc[1].volume,
+        ];
 
-        // Cutoff modulated in octaves (musical) by filter env + global LFO.
+        // Cutoff modulated in octaves (musical) by filter env + global LFO;
+        // both channels share the sweep, each keeps its own filter state.
         let filtered = if p.flt_on {
             let mod_oct = p.filt_env_oct * fenv + p.lfo_oct * lfo_value;
             match p.flt_mode {
@@ -187,24 +215,35 @@ impl Voice {
                     let g = if p.flt_mode == FilterMode::CombMinus { -g } else { g };
                     // Feedback comb rings up to 1/(1-g); pull it back so
                     // high resonance stays hot but not obliterating.
-                    self.comb.process(mixed, p.sr / f, g) * (1.0 - 0.55 * g.abs())
+                    let damp = 1.0 - 0.55 * g.abs();
+                    let mut out = [0.0f32; 2];
+                    for ch in 0..2 {
+                        out[ch] = self.comb[ch].process(mixed[ch], p.sr / f, g) * damp;
+                    }
+                    out
                 }
                 _ => {
                     let cutoff = (p.cutoff * 2.0f32.powf(mod_oct)).clamp(20.0, p.sr * 0.45);
-                    let (lp, bp, hp) = self.filter.process(mixed, cutoff, p.resonance, p.sr);
-                    match p.flt_mode {
-                        FilterMode::Lowpass => lp,
-                        FilterMode::Bandpass => bp,
-                        FilterMode::Highpass => hp,
-                        _ => lp + hp,
+                    let mut out = [0.0f32; 2];
+                    for ch in 0..2 {
+                        let (lp, bp, hp) =
+                            self.filter[ch].process(mixed[ch], cutoff, p.resonance, p.sr);
+                        out[ch] = match p.flt_mode {
+                            FilterMode::Lowpass => lp,
+                            FilterMode::Bandpass => bp,
+                            FilterMode::Highpass => hp,
+                            _ => lp + hp,
+                        };
                     }
+                    out
                 }
             }
         } else {
             mixed
         };
 
-        filtered * amp * self.velocity
+        let v = amp * self.velocity;
+        (filtered[0] * v, filtered[1] * v)
     }
 }
 
