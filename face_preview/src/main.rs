@@ -150,20 +150,35 @@ fn main() {
         )
         .expect("render synth");
         println!("wrote {path}");
+    }
 
-        // Same staging, WOBBLE room flipped to the MODS list.
-        let path = format!("{out}/synth_mods.png");
+    // Waveshaper mid-growl: Tube curve, 12 dB of drive, a nudge of bias,
+    // sub split holding the bass clean at 120 Hz.
+    {
+        use lantern_waveshaper as w;
+        let (params, store, meters) = stage::<w::WaveshaperDsp>();
+        store.set(w::P_DRIVE, 12.0 / 36.0);
+        store.set(w::P_SHAPE, 0.1); // Tube
+        store.set(w::P_SUB, 1.0);
+        meters.set(w::M_LEVEL_L, 0.48);
+        meters.set(w::M_LEVEL_R, 0.44);
+        meters.set(w::M_PEAK_L, 0.9);
+        meters.set(w::M_PEAK_R, 0.86);
+        meters.set(w::M_RMS_L, 0.26);
+        meters.set(w::M_RMS_R, 0.24);
+        let path = format!("{out}/waveshaper.png");
+        let bg = w::background();
         preview::render_png_with_background(
-            1700,
-            1176,
+            800,
+            888,
             &theme,
             Some(&bg),
             params,
             90,
             &path,
-            s::preview_face_mods(),
+            w::preview_face(),
         )
-        .expect("render synth mods view");
+        .expect("render waveshaper");
         println!("wrote {path}");
     }
 }

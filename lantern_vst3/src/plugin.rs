@@ -138,6 +138,13 @@ pub struct ParamValues<'a> {
     pub(crate) defs: &'static [ParamDef],
 }
 
+impl<'a> ParamValues<'a> {
+    /// Host-free view over a raw store, for native tools and tests.
+    pub fn preview(store: &'a ParamStore, defs: &'static [ParamDef]) -> Self {
+        Self { store, defs }
+    }
+}
+
 impl ParamValues<'_> {
     /// Normalized 0..1 value by index in `Dsp::PARAMS`.
     pub fn normalized(&self, index: usize) -> f64 {

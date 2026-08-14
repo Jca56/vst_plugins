@@ -12,3 +12,4 @@ lantern_keylight = { path = "../lantern_keylight" }
 lantern_compressor = { path = "../lantern_compressor" }
 lantern_eq = { path = "../lantern_eq" }
 lantern_synth = { path = "../lantern_synth" }
+lantern_waveshaper = { path = "../lantern_waveshaper" }

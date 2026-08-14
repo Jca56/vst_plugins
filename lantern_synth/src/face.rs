@@ -32,16 +32,16 @@ const WIN_H: u32 = 1176;
 const KB_LOW: u8 = 36;
 const WHITE_KEYS: usize = 29; // 4 octaves + the top C
 
-/// The fire experiment: Alva's background image, embedded raw (888x442
-/// RGBA), drawn under a translucent panel. If the verdict is "stupid",
-/// this and `face_glass` revert to `face()` in one commit.
+/// Alva's fire, embedded raw (850x588 RGBA — fire_background_3, center-
+/// cropped to the window's aspect so the stretch stays undistorted),
+/// drawn under the translucent panels.
 static BG_RGBA: &[u8] = include_bytes!("../assets/bg.rgba");
 
 pub fn background() -> BackgroundImage {
     BackgroundImage {
         rgba: BG_RGBA.to_vec(),
-        width: 888,
-        height: 442,
+        width: 850,
+        height: 588,
         alpha: 1.0,
     }
 }

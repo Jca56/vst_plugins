@@ -13,6 +13,7 @@ members = [
     "lantern_synth",
     "lantern_ui",
     "lantern_vst3",
+    "lantern_waveshaper",
     "vst3_probe",
     "wine_probe",
 ]

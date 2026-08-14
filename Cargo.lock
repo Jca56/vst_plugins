@@ -181,6 +181,7 @@ dependencies = [
  "lantern_synth",
  "lantern_ui",
  "lantern_vst3",
+ "lantern_waveshaper",
 ]
 
 [[package]]
@@ -502,6 +503,14 @@ dependencies = [
 [[package]]
 name = "lantern_vst3"
 version = "0.1.0"
+
+[[package]]
+name = "lantern_waveshaper"
+version = "0.1.0"
+dependencies = [
+ "lantern_ui",
+ "lantern_vst3",
+]
 
 [[package]]
 name = "libc"
