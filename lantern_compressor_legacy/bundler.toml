@@ -1,0 +1,3 @@
+# Pretty bundle name for the built plugin (file name of the .vst3/.clap).
+[lantern_compressor]
+name = "Lantern Compressor"

@@ -1,0 +1,11 @@
+# Lets us run the nih-plug bundler as `cargo xtask bundle <pkg> ...`
+[alias]
+xtask = "run --package xtask --release --"
+
+# Cross-compiling Linux -> Windows (so Ableton-under-Wine, a Windows app, can load it).
+# Uses the system mingw gcc as the linker; rustup's windows-gnu std supplies the CRT.
+# The -L points at a shim dir (created by build.sh) holding a libgcc_eh.a stand-in,
+# because this mingw folds exception-handling into libgcc.a and ships no libgcc_eh.a.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+rustflags = ["-L", "native=.cargo/mingw-shim"]

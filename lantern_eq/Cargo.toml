@@ -1,0 +1,14 @@
+[package]
+name = "lantern_eq"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+description = "Lantern EQ — five-band parametric EQ with spectrum analyzer, on the zero-dep Lantern foundation"
+
+[lib]
+# rlib so native tools (face_preview) can link the face code.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lantern_ui = { path = "../lantern_ui" }
+lantern_vst3 = { path = "../lantern_vst3" }

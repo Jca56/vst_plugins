@@ -1,0 +1,5 @@
+# Pin this workspace to the rustup-managed toolchain (not the eselect system rust),
+# and make sure the Windows cross-compile target is available.
+[toolchain]
+channel = "stable"
+targets = ["x86_64-pc-windows-gnu"]

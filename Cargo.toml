@@ -1,0 +1,23 @@
+# Lantern VST foundation workspace. The two older standalone projects keep
+# their own workspaces until they're rebuilt on the foundation crates.
+[workspace]
+resolver = "2"
+members = [
+    "face_preview",
+    "lantern_compressor",
+    "lantern_editor",
+    "lantern_eq",
+    "lantern_gain",
+    "lantern_gpu",
+    "lantern_keylight",
+    "lantern_ui",
+    "lantern_vst3",
+    "vst3_probe",
+    "wine_probe",
+]
+exclude = ["lantern_compressor_legacy", "lantern-synth"]
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+strip = "symbols"

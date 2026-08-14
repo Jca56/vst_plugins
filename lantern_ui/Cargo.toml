@@ -1,0 +1,13 @@
+[package]
+name = "lantern_ui"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+description = "Lantern widget kit: immediate-mode knobs/sliders/text over lantern_gpu, wired to host automation via lantern_vst3"
+
+[dependencies]
+lantern_gpu = { path = "../lantern_gpu" }
+lantern_vst3 = { path = "../lantern_vst3" }
+# Sanctioned exception: glyph rasterization only. The atlas, layout, and
+# pipeline are ours (ported from Lantern DE's lntrn-type).
+fontdue = "0.9"

@@ -1,0 +1,13 @@
+[package]
+name = "lantern_gain"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+description = "Lantern Gain — the milestone plugin proving the hand-rolled VST3 ABI in a real host"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lantern_ui = { path = "../lantern_ui" }
+lantern_vst3 = { path = "../lantern_vst3" }

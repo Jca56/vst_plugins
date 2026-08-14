@@ -1,0 +1,40 @@
+[package]
+name = "lantern_synth"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+license = "GPL-3.0-or-later"
+description = "Lantern — a subtractive synth with FM cross-mod, built for dubstep bass"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+# cdylib: the actual VST3/CLAP plugin binary. lib: lets the xtask bundler inspect it.
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# nih-plug is distributed as a git dependency (not on crates.io).
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+# VIZIA-based GUI (OpenGL backend — works under Wine).
+nih_plug_vizia = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+strip = "symbols"
+
+# Like release, but with debug symbols — handy for profiling the DSP later.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"
+
+# Optional: build a native standalone app (for fast UI iteration), not the plugin.
+[features]
+standalone = ["nih_plug/standalone"]
+
+[[bin]]
+name = "lantern_standalone"
+path = "src/bin/lantern_standalone.rs"
+required-features = ["standalone"]

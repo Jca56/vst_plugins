@@ -1,0 +1,32 @@
+[package]
+name = "lantern_compressor"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+license = "GPL-3.0-or-later"
+description = "Lantern Compressor — character compressor with sidechain HPF, auto release, and a drive stage"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+# cdylib: the actual VST3/CLAP plugin binary. lib: lets the xtask bundler inspect it.
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# nih-plug is distributed as a git dependency (not on crates.io). Pinned to the
+# same revision Lantern builds against, so the two projects share one cached
+# checkout and one API surface. No GUI crate on purpose: with no custom editor,
+# Ableton renders the parameters inline in the device chain like a stock device.
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "f36931f7af4646065488a9845d8f8c2f95252c23", features = ["assert_process_allocs"] }
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+strip = "symbols"
+
+# Like release, but with debug symbols — handy for profiling the DSP later.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"

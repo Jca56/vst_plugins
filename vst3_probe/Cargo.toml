@@ -1,0 +1,9 @@
+[package]
+name = "vst3_probe"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+description = "Mini VST3 host: loads a .vst3 DLL under Wine and exercises the full plugin lifecycle"
+
+[dependencies]
+lantern_vst3 = { path = "../lantern_vst3" }

@@ -1,0 +1,9 @@
+[package]
+name = "wine_probe"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+description = "Phase-0 probe: proves lantern_gpu renders into a Win32 window under Wine"
+
+[dependencies]
+lantern_gpu = { path = "../lantern_gpu" }

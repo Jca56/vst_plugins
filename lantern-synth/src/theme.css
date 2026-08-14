@@ -1,0 +1,49 @@
+/* Lantern — dark theme with a warm amber "lantern glow" accent. */
+
+.root {
+  width: 100%;
+  height: 100%;
+  background-color: #15151b;
+}
+
+.title {
+  color: #ffb347;
+}
+
+/* Each control group is a rounded dark panel with a subtle border. */
+.panel {
+  background-color: #1e1e27;
+  border-color: #343440;
+  border-width: 1px;
+  border-radius: 6px;
+  child-left: 10px;
+  child-right: 10px;
+  child-top: 8px;
+  child-bottom: 10px;
+}
+
+.section {
+  color: #ff9d3c;
+}
+
+.plabel {
+  color: #adadbe;
+}
+
+/* Sliders: dark track, amber fill that brightens on hover. */
+param-slider {
+  background-color: #26262f;
+  border-color: #343440;
+  border-width: 1px;
+  border-radius: 3px;
+}
+param-slider .fill {
+  background-color: #ff9d3c;
+}
+param-slider:hover .fill {
+  background-color: #ffb347;
+  transition: background-color 100ms;
+}
+param-slider .value {
+  color: #f2f2f7;
+}

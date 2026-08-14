@@ -1,0 +1,13 @@
+[package]
+name = "lantern_gpu"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+description = "Lantern 2D GPU renderer — ported from Lantern DE's lntrn-render, aimed at Win32 plugin windows"
+
+[dependencies]
+# The two sanctioned exceptions: wgpu is the house GPU standard, and
+# raw-window-handle is the handle vocabulary wgpu itself speaks.
+# (bytemuck and pollster from the original were replaced with our own code.)
+raw-window-handle = "0.6"
+wgpu = "28"

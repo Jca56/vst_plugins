@@ -1,0 +1,9 @@
+[package]
+name = "lantern_vst3"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alva"]
+description = "Hand-rolled VST3 ABI in pure Rust — zero dependencies, the Lantern way"
+
+[dependencies]
+# None. That's the whole point.
