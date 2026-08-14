@@ -316,7 +316,7 @@ impl Face {
 
         for (i, &pc) in WHITE_PC.iter().enumerate() {
             let r = white_rect(i);
-            ui.painter.rect_filled(r, 4.0, Color::from_rgb8(206, 206, 214));
+            ui.painter.rect_filled(r, 4.0, Color::from_rgb8(208, 208, 208));
             if in_scale(pc) {
                 let a = if pc == root { 0.72 } else { 0.38 };
                 ui.painter.rect_filled(r, 4.0, t.cool.with_alpha(a));
@@ -326,12 +326,12 @@ impl Face {
                 r.center_x(),
                 r.y + r.h - 34.0,
                 19.0,
-                Color::from_rgb8(45, 45, 55),
+                Color::from_rgb8(48, 48, 48),
             );
         }
         for &(pc, bx) in &BLACK_PC {
             let r = black_rect(bx);
-            ui.painter.rect_filled(r, 4.0, Color::from_rgb8(18, 18, 23));
+            ui.painter.rect_filled(r, 4.0, Color::from_rgb8(20, 20, 20));
             if in_scale(pc) {
                 let a = if pc == root { 0.85 } else { 0.55 };
                 ui.painter.rect_filled(r, 4.0, t.cool.with_alpha(a));

@@ -34,21 +34,22 @@ impl Theme {
     /// and the gold→orange fire divider as the family signature.
     pub fn lantern() -> Self {
         Self {
-            bg: Color::from_rgb8(6, 6, 8),
+            // True neutral grays — no blue tint (Alva spotted the cool cast).
+            bg: Color::from_rgb8(7, 7, 7),
             header_a: Color::from_rgb8(24, 18, 48),
             header_b: Color::from_rgb8(184, 132, 30),
             header_c: Color::from_rgb8(255, 111, 0),
-            panel: Color::from_rgb8(17, 17, 21),
-            panel_border: Color::from_rgb8(88, 88, 104),
-            well: Color::from_rgb8(30, 30, 37),
-            well_deep: Color::from_rgb8(12, 12, 15),
-            track: Color::from_rgb8(46, 46, 56),
+            panel: Color::from_rgb8(18, 18, 18),
+            panel_border: Color::from_rgb8(95, 95, 95),
+            well: Color::from_rgb8(31, 31, 31),
+            well_deep: Color::from_rgb8(13, 13, 13),
+            track: Color::from_rgb8(49, 49, 49),
             accent: Color::from_rgb8(255, 166, 22),
             warm: Color::from_rgb8(255, 96, 28),
             cool: Color::from_rgb8(36, 108, 250),
-            needle: Color::from_rgb8(240, 240, 245),
-            text: Color::from_rgb8(240, 240, 246),
-            text_dim: Color::from_rgb8(172, 172, 185),
+            needle: Color::from_rgb8(242, 242, 242),
+            text: Color::from_rgb8(242, 242, 242),
+            text_dim: Color::from_rgb8(176, 176, 176),
             meter_ok: Color::from_rgb8(22, 155, 64),
             meter_hot: Color::from_rgb8(250, 45, 35),
         }

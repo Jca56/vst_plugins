@@ -45,7 +45,7 @@ struct Face {
 /// Sub-panel fill: one step lighter than the face panel.
 fn sub_panel(ui: &mut Ui, rect: Rect) {
     let t = ui.theme;
-    ui.painter.rect_filled(rect, 10.0, Color::from_rgb8(26, 26, 31));
+    ui.painter.rect_filled(rect, 10.0, Color::from_rgb8(27, 27, 27));
     ui.painter.rect_border(rect, 10.0, 2.5, t.panel_border);
 }
 
@@ -60,13 +60,15 @@ fn filter_panel(ui: &mut Ui, r: Rect) {
 
     response_window(ui, Rect::new(r.x + 16.0, r.y + 74.0, r.w - 32.0, 130.0));
 
+    // Three knobs, centered in the row.
+    let start = r.x + (r.w - 350.0) * 0.5;
     for (i, (param, label)) in [(P_CUTOFF, "CUTOFF"), (P_RES, "RES"), (P_FENV_AMT, "ENV AMT")]
         .iter()
         .enumerate()
     {
         ui.knob_cell(
             *param,
-            Rect::new(r.x + 16.0 + i as f32 * 118.0, r.y + 216.0, 114.0, 190.0),
+            Rect::new(start + i as f32 * 118.0, r.y + 216.0, 114.0, 190.0),
             label,
         );
     }
@@ -259,7 +261,7 @@ impl Face {
 
         for i in 0..WHITE_KEYS {
             let r = white_rect(i);
-            ui.painter.rect_filled(r, 4.0, Color::from_rgb8(206, 206, 214));
+            ui.painter.rect_filled(r, 4.0, Color::from_rgb8(208, 208, 208));
             if lit(white_note(i)) {
                 ui.painter.rect_filled(r, 4.0, t.cool.with_alpha(0.55));
             }
@@ -269,14 +271,14 @@ impl Face {
                     r.x + 7.0,
                     r.y + r.h - 28.0,
                     17.0,
-                    Color::from_rgb8(45, 45, 55),
+                    Color::from_rgb8(48, 48, 48),
                 );
             }
         }
         for oct in 0..3 {
             for &(pc, boundary) in &BLACKS {
                 let r = black_rect(black_x(oct, boundary));
-                ui.painter.rect_filled(r, 4.0, Color::from_rgb8(18, 18, 23));
+                ui.painter.rect_filled(r, 4.0, Color::from_rgb8(20, 20, 20));
                 if lit(KB_LOW + oct as u8 * 12 + pc) {
                     ui.painter.rect_filled(r, 4.0, t.cool.with_alpha(0.65));
                 }
