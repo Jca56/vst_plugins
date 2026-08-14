@@ -53,7 +53,8 @@ pub const M_RMS_L: usize = 4;
 pub const M_RMS_R: usize = 5;
 /// Active voice count, for the face.
 pub const M_VOICES: usize = 6;
-/// Bitmask of sounding pitch classes (bit 0 = C), for the face keyboard.
+/// Bitmask of sounding keys on the face keyboard: bit i = MIDI note 24+i
+/// (C0..=C3 in Live naming); out-of-range notes fold by octaves into view.
 pub const M_KEYS: usize = 7;
 /// UI keyboard gate, written by the editor: note+1 while a key is held,
 /// 0 when released. The DSP edge-detects it into note on/off.
@@ -451,9 +452,16 @@ impl Dsp for LanternSynthDsp {
             M_VOICES,
             self.voices.iter().filter(|v| v.active).count() as f64,
         );
-        let mut key_mask = 0u32;
+        let mut key_mask = 0u64;
         for v in self.voices.iter().filter(|v| v.active) {
-            key_mask |= 1 << (v.note % 12);
+            let mut n = v.note as i32;
+            while n < 24 {
+                n += 12;
+            }
+            while n > 60 {
+                n -= 12;
+            }
+            key_mask |= 1 << (n - 24);
         }
         meters.set(M_KEYS, key_mask as f64);
     }
