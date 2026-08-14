@@ -80,7 +80,13 @@ fn pct_fmt(n: f64) -> String {
     format!("{:.0}", pct_plain(n))
 }
 
-fn wave_fmt(n: f64) -> String {
+fn osc_wave_fmt(n: f64) -> String {
+    ["Sine", "Triangle", "Saw", "Square", "Pulse 25%", "Pulse 12%", "Shark", "Noise"]
+        [((n * 7.0).round() as usize).min(7)]
+    .to_string()
+}
+
+fn lfo_wave_fmt(n: f64) -> String {
     ["Sine", "Tri", "Saw", "Sqr"][((n * 3.0).round() as usize).min(3)].to_string()
 }
 
@@ -95,10 +101,10 @@ fn detune_fmt(n: f64) -> String {
 }
 
 fn pitch_plain(n: f64) -> f64 {
-    (n * 48.0).round() - 24.0 // stepped semitones, +/- 2 octaves
+    (n * 96.0).round() - 48.0 // stepped semitones, +/- 4 octaves
 }
 fn pitch_norm(p: f64) -> f64 {
-    (p + 24.0) / 48.0
+    (p + 48.0) / 96.0
 }
 fn pitch_fmt(n: f64) -> String {
     let p = pitch_plain(n);
@@ -281,15 +287,15 @@ impl Dsp for LanternSynthDsp {
     #[rustfmt::skip]
     const PARAMS: &'static [ParamDef] = &[
         p!(0,  "O1 On",     "",   1.0,       1, None, None, Some(on_fmt)),
-        p!(1,  "O1 Wave",   "",   2.0 / 3.0, 3, None, None, Some(wave_fmt)),
+        p!(1,  "O1 Wave",   "",   2.0 / 7.0, 7, None, None, Some(osc_wave_fmt)),
         p!(2,  "O1 Volume", "%",  0.7,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(3,  "O1 Pitch",  "st", 0.5,      48, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
+        p!(3,  "O1 Pitch",  "st", 0.5,      96, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
         p!(4,  "O1 Voices", "",   0.0,       6, Some(voices_plain), Some(voices_norm), Some(voices_fmt)),
         p!(5,  "O1 Detune", "ct", 0.10,      0, Some(detune_plain), Some(detune_norm), Some(detune_fmt)),
         p!(6,  "O2 On",     "",   1.0,       1, None, None, Some(on_fmt)),
-        p!(7,  "O2 Wave",   "",   2.0 / 3.0, 3, None, None, Some(wave_fmt)),
+        p!(7,  "O2 Wave",   "",   2.0 / 7.0, 7, None, None, Some(osc_wave_fmt)),
         p!(8,  "O2 Volume", "%",  0.7,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(9,  "O2 Pitch",  "st", 0.5,      48, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
+        p!(9,  "O2 Pitch",  "st", 0.5,      96, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
         p!(10, "O2 Voices", "",   1.0 / 6.0, 6, Some(voices_plain), Some(voices_norm), Some(voices_fmt)),
         p!(11, "O2 Detune", "ct", 0.12,      0, Some(detune_plain), Some(detune_norm), Some(detune_fmt)),
         p!(12, "FM Amount", "%",  0.0,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
@@ -298,7 +304,7 @@ impl Dsp for LanternSynthDsp {
         p!(15, "Filter Env","oct",0.375,     0, Some(moct_plain), Some(moct_norm), Some(moct_fmt)),
         p!(16, "LFO Rate",  "Hz", 0.6972,    0, Some(rate_plain), Some(rate_norm), Some(rate_fmt)),
         p!(17, "LFO Depth", "oct",0.0,       0, Some(moct_plain), Some(moct_norm), Some(moct_fmt)),
-        p!(18, "LFO Wave",  "",   0.0,       3, None, None, Some(wave_fmt)),
+        p!(18, "LFO Wave",  "",   0.0,       3, None, None, Some(lfo_wave_fmt)),
         p!(19, "Amp Attack","",   0.1889,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
         p!(20, "Amp Decay", "",   0.6696,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
         p!(21, "Amp Sustain","%", 0.9,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
@@ -404,7 +410,7 @@ impl Dsp for LanternSynthDsp {
         for (o, set) in osc_settings.iter_mut().enumerate() {
             set.enabled = params.normalized(p_osc(o, OSC_ENABLE)) >= 0.5;
             set.wave = Waveform::from_index(
-                (params.normalized(p_osc(o, OSC_WAVE)) * 3.0).round() as usize,
+                (params.normalized(p_osc(o, OSC_WAVE)) * 7.0).round() as usize,
             );
             set.voices = (params.plain(p_osc(o, OSC_VOICES)) as usize).clamp(1, MAX_UNISON);
             let pitch_st = params.plain(p_osc(o, OSC_PITCH)) as f32;

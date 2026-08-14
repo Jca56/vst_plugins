@@ -11,6 +11,14 @@ pub enum Waveform {
     Triangle,
     Saw,
     Square,
+    /// 25% pulse — nasal, hollow.
+    Pulse,
+    /// 12.5% pulse — thin, buzzy.
+    Narrow,
+    /// Shark fin: fast rise, long fall. Between triangle and saw.
+    Shark,
+    /// White noise (ignores pitch).
+    Noise,
 }
 
 impl Waveform {
@@ -19,7 +27,11 @@ impl Waveform {
             0 => Self::Sine,
             1 => Self::Triangle,
             2 => Self::Saw,
-            _ => Self::Square,
+            3 => Self::Square,
+            4 => Self::Pulse,
+            5 => Self::Narrow,
+            6 => Self::Shark,
+            _ => Self::Noise,
         }
     }
 }
@@ -63,6 +75,7 @@ pub struct Voice {
     pub note: u8,
     pub velocity: f32,
     phases: [[f32; MAX_UNISON]; 2],
+    rng: u32,
     pub amp_env: Adsr,
     pub flt_env: Adsr,
     filter: Svf,
@@ -75,6 +88,7 @@ impl Voice {
             note: 0,
             velocity: 0.0,
             phases: [[0.0; MAX_UNISON]; 2],
+            rng: 0x2F6E_2B1F,
             amp_env: Adsr::new(),
             flt_env: Adsr::new(),
             filter: Svf::new(),
@@ -115,7 +129,7 @@ impl Voice {
         for k in 0..n {
             let dt = (base * set.ratios[k] / sr).min(0.49);
             let ph = (self.phases[oi][k] + pm).rem_euclid(1.0);
-            sum += osc(set.wave, ph, dt);
+            sum += osc(set.wave, ph, dt, &mut self.rng);
             self.phases[oi][k] = (self.phases[oi][k] + dt).fract();
         }
         sum / (n as f32).sqrt()
@@ -270,26 +284,48 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
     }
 }
 
-/// Band-limited oscillator (audio rate). `dt` is the per-sample phase step.
-pub fn osc(wave: Waveform, phase: f32, dt: f32) -> f32 {
+/// PolyBLEP pulse at an arbitrary duty cycle.
+fn pulse(phase: f32, dt: f32, duty: f32) -> f32 {
+    let naive = if phase < duty { 1.0 } else { -1.0 };
+    // DC-compensate so thin pulses stay centered.
+    let centered = naive - (2.0 * duty - 1.0);
+    centered + poly_blep(phase, dt) - poly_blep((phase + (1.0 - duty)).fract(), dt)
+}
+
+/// Band-limited oscillator (audio rate). `dt` is the per-sample phase step;
+/// `rng` feeds the noise shape.
+pub fn osc(wave: Waveform, phase: f32, dt: f32, rng: &mut u32) -> f32 {
     match wave {
         Waveform::Sine => (phase * TAU).sin(),
         Waveform::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
         Waveform::Saw => (2.0 * phase - 1.0) - poly_blep(phase, dt),
-        Waveform::Square => {
-            let naive = if phase < 0.5 { 1.0 } else { -1.0 };
-            naive + poly_blep(phase, dt) - poly_blep((phase + 0.5).fract(), dt)
+        Waveform::Square => pulse(phase, dt, 0.5),
+        Waveform::Pulse => pulse(phase, dt, 0.25),
+        Waveform::Narrow => pulse(phase, dt, 0.125),
+        Waveform::Shark => {
+            // Rise over the first quarter, fall over the rest: continuous,
+            // so only mild slope-discontinuity aliasing (like triangle).
+            if phase < 0.25 {
+                -1.0 + 8.0 * phase
+            } else {
+                1.0 - (phase - 0.25) / 0.75 * 2.0
+            }
+        }
+        Waveform::Noise => {
+            *rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*rng >> 8) as f32 / 8_388_608.0 - 1.0
         }
     }
 }
 
-/// Naive shape — fine for the sub-audio LFO.
+/// Naive shape — fine for the sub-audio LFO (first four shapes only; the
+/// rest degrade to their nearest classic).
 pub fn naive_wave(wave: Waveform, phase: f32) -> f32 {
     match wave {
         Waveform::Sine => (phase * TAU).sin(),
-        Waveform::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
+        Waveform::Triangle | Waveform::Shark => 1.0 - 4.0 * (phase - 0.5).abs(),
         Waveform::Saw => 2.0 * phase - 1.0,
-        Waveform::Square => {
+        _ => {
             if phase < 0.5 {
                 1.0
             } else {

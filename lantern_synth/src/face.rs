@@ -16,8 +16,6 @@ use crate::{
     OSC_DETUNE, OSC_ENABLE, OSC_PITCH, OSC_VOICES, OSC_VOLUME, OSC_WAVE,
 };
 
-const WAVE_NAMES: [&str; 4] = ["SIN", "TRI", "SAW", "SQR"];
-
 const WIN_W: u32 = 1496;
 const WIN_H: u32 = 884;
 
@@ -69,28 +67,21 @@ impl Face {
         self.keyboard(ui, Rect::new(44.0, 690.0, 1408.0, 150.0));
     }
 
-    /// One oscillator room: power square top-left, wave row beside it,
-    /// VOLUME + PITCH knobs, then VOICES stepper with DETUNE alongside.
+    /// One oscillator room: power square + wave dropdown across the top,
+    /// then PITCH | VOLUME | (VOICES over DETUNE) left to right.
     fn osc_panel(&mut self, ui: &mut Ui, r: Rect, o: usize) {
         let t = ui.theme;
         sub_panel(ui, r);
 
         ui.toggle(p_osc(o, OSC_ENABLE), Rect::new(r.x + 12.0, r.y + 12.0, 36.0, 36.0), "");
-        for (w, name) in WAVE_NAMES.iter().enumerate() {
-            ui.choice(
-                p_osc(o, OSC_WAVE),
-                w as i32,
-                Rect::new(r.x + 58.0 + w as f32 * 86.0, r.y + 12.0, 82.0, 36.0),
-                name,
-            );
-        }
+        ui.dropdown(p_osc(o, OSC_WAVE), Rect::new(r.x + 58.0, r.y + 12.0, r.w - 70.0, 36.0));
 
-        ui.knob_cell(p_osc(o, OSC_VOLUME), Rect::new(r.x + 14.0, r.y + 60.0, 186.0, 190.0), "VOLUME");
-        ui.knob_cell(p_osc(o, OSC_PITCH), Rect::new(r.x + 206.0, r.y + 60.0, 186.0, 190.0), "PITCH");
+        ui.knob_cell(p_osc(o, OSC_PITCH), Rect::new(r.x + 14.0, r.y + 64.0, 122.0, 190.0), "PITCH");
+        ui.knob_cell(p_osc(o, OSC_VOLUME), Rect::new(r.x + 142.0, r.y + 64.0, 122.0, 190.0), "VOLUME");
 
-        ui.label_centered("VOICES", r.x + 107.0, r.y + 260.0, 21.0, t.text_dim);
-        ui.stepper_box(p_osc(o, OSC_VOICES), Rect::new(r.x + 71.0, r.y + 302.0, 72.0, 48.0));
-        ui.knob_cell(p_osc(o, OSC_DETUNE), Rect::new(r.x + 206.0, r.y + 260.0, 186.0, 156.0), "DETUNE");
+        ui.label_centered("VOICES", r.x + 330.0, r.y + 64.0, 21.0, t.text_dim);
+        ui.stepper_box(p_osc(o, OSC_VOICES), Rect::new(r.x + 294.0, r.y + 102.0, 72.0, 48.0));
+        ui.knob_cell(p_osc(o, OSC_DETUNE), Rect::new(r.x + 268.0, r.y + 170.0, 124.0, 190.0), "DETUNE");
     }
 
     /// C0..C3, playable: the mouse writes a gate the DSP edge-detects into

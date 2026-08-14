@@ -107,7 +107,30 @@ impl Editor for UiEditor {
             mem: &mut self.mem,
             size_request: None,
         };
+        // While a dropdown popup is open it owns the mouse: the face draws
+        // with clicks/wheel muted, then the overlay (drawn on top) gets the
+        // real input back.
+        let modal = ui.mem.dropdown.is_some();
+        let stash = (
+            ui.input.pressed,
+            ui.input.released,
+            ui.input.double_clicked,
+            ui.input.wheel,
+        );
+        if modal {
+            ui.input.pressed = false;
+            ui.input.released = false;
+            ui.input.double_clicked = false;
+            ui.input.wheel = 0.0;
+        }
         (self.build)(&mut ui);
+        if modal {
+            ui.input.pressed = stash.0;
+            ui.input.released = stash.1;
+            ui.input.double_clicked = stash.2;
+            ui.input.wheel = stash.3;
+        }
+        ui.draw_dropdown_overlay();
         let size_request = ui.size_request;
         self.input.end_frame();
         if size_request.is_some() {

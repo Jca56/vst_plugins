@@ -59,9 +59,18 @@ pub(crate) struct EditBox {
     pristine: bool,
 }
 
+/// An open dropdown's popup, drawn as an overlay at frame end.
+#[derive(Clone, Copy)]
+pub(crate) struct DropdownState {
+    id: u32,
+    param: usize,
+    anchor: Rect,
+}
+
 /// Cross-frame widget state (which widget owns the current drag).
 #[derive(Default)]
 pub struct UiMemory {
+    pub(crate) dropdown: Option<DropdownState>,
     active: Option<u32>,
     drag_anchor_y: f32,
     drag_anchor_value: f64,
@@ -424,6 +433,110 @@ impl Ui<'_> {
         let engaged = hovered || self.mem.active == Some(id);
         let fill = self.params.normalized(param) as f32;
         self.edit_chrome(id, param, rect, engaged, Some(fill));
+    }
+
+    /// Dropdown bound to a stepped param: the closed box shows the current
+    /// value; clicking opens a picker overlay drawn above everything at
+    /// frame end (input to other widgets is blocked while it's open).
+    /// Wheel steps through values without opening.
+    pub fn dropdown(&mut self, param: usize, rect: Rect) {
+        let id = 0x6000 + param as u32;
+        let open = matches!(&self.mem.dropdown, Some(d) if d.id == id);
+        let (mx, my) = self.input.mouse;
+        let hovered = rect.contains(mx, my);
+
+        if hovered && self.input.pressed && self.mem.dropdown.is_none() {
+            self.mem.dropdown = Some(DropdownState {
+                id,
+                param,
+                anchor: rect,
+            });
+        } else if hovered && !open && self.input.wheel != 0.0 {
+            let steps = self.params.def(param).step_count.max(1);
+            let value =
+                self.params.normalized(param) + self.input.wheel as f64 / steps as f64;
+            self.params.begin_edit(param);
+            self.params.perform_edit(param, value);
+            self.params.end_edit(param);
+        }
+
+        let t = self.theme;
+        self.painter.rect_filled(rect, 6.0, t.well_deep);
+        let border = if open {
+            t.accent
+        } else if hovered {
+            t.text_dim
+        } else {
+            t.panel_border
+        };
+        self.painter.rect_border(rect, 6.0, 2.5, border);
+        let text = self.params.def(param).display(self.params.normalized(param));
+        let ty = rect.center_y() - self.text.line_height(21.0) * 0.5 + 1.0;
+        self.label(&text, rect.x + 14.0, ty, 21.0, t.text);
+        // The little "more below" arrow.
+        let (ax, ay) = (rect.x + rect.w - 22.0, rect.center_y() - 2.0);
+        self.painter.triangle(
+            ax - 7.0,
+            ay,
+            ax + 7.0,
+            ay,
+            ax,
+            ay + 7.0,
+            t.text_dim,
+        );
+    }
+
+    /// Draw and run the open dropdown's popup. Called by the editor shell
+    /// after the face has drawn, so the list sits above everything.
+    pub(crate) fn draw_dropdown_overlay(&mut self) {
+        let Some(d) = self.mem.dropdown else { return };
+        let t = self.theme;
+        let def = self.params.def(d.param);
+        let steps = def.step_count.max(1);
+        let count = steps + 1;
+        let item_h = 40.0;
+        let h = count as f32 * item_h + 8.0;
+        let below = d.anchor.y + d.anchor.h + 4.0;
+        let y = if below + h > self.height - 8.0 {
+            d.anchor.y - 4.0 - h
+        } else {
+            below
+        };
+        let list = Rect::new(d.anchor.x, y, d.anchor.w, h);
+
+        self.painter
+            .shadow(list, 8.0, 12.0, Color::rgba(0.0, 0.0, 0.0, 0.6), 0.0, 4.0);
+        self.painter.rect_filled(list, 8.0, t.well_deep);
+        self.painter.rect_border(list, 8.0, 2.5, t.panel_border);
+
+        let (mx, my) = self.input.mouse;
+        let current = (self.params.normalized(d.param) * steps as f64).round() as i32;
+        let mut picked: Option<i32> = None;
+        for i in 0..count {
+            let ir = Rect::new(list.x + 4.0, list.y + 4.0 + i as f32 * item_h, list.w - 8.0, item_h);
+            let hovered = ir.contains(mx, my);
+            if i == current {
+                self.painter.rect_filled(ir, 5.0, t.accent.with_alpha(0.25));
+            } else if hovered {
+                self.painter.rect_filled(ir, 5.0, t.track.with_alpha(0.6));
+            }
+            let text = def.display(i as f64 / steps as f64);
+            let ty = ir.center_y() - self.text.line_height(21.0) * 0.5 + 1.0;
+            let color = if i == current { t.text } else { t.text_dim };
+            self.label(&text, ir.x + 10.0, ty, 21.0, color);
+            if hovered && self.input.pressed {
+                picked = Some(i);
+            }
+        }
+
+        if let Some(i) = picked {
+            self.params.begin_edit(d.param);
+            self.params.perform_edit(d.param, i as f64 / steps as f64);
+            self.params.end_edit(d.param);
+            self.mem.dropdown = None;
+        } else if self.input.pressed && !list.contains(mx, my) && !d.anchor.contains(mx, my) {
+            self.mem.dropdown = None;
+        }
     }
 
     /// Number box adjusted by VERTICAL drag (up = more) — for counts and
