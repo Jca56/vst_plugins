@@ -10,6 +10,7 @@ members = [
     "lantern_gain",
     "lantern_gpu",
     "lantern_keylight",
+    "lantern_synth",
     "lantern_ui",
     "lantern_vst3",
     "vst3_probe",

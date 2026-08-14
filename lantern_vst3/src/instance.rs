@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::base::*;
 use crate::interfaces::*;
-use crate::plugin::{Dsp, MeterStore, ParamStore, ParamValues};
+use crate::plugin::{Dsp, MeterStore, NoteEvent, NoteKind, ParamStore, ParamValues};
 
 const STATE_MAGIC: u32 = u32::from_le_bytes(*b"LNTN");
 const STATE_VERSION: u32 = 1;
@@ -210,8 +210,15 @@ impl<D: Dsp> PluginInstance<D> {
     unsafe extern "system" fn c_set_io_mode(_this: *mut c_void, _mode: i32) -> tresult {
         kNotImplemented
     }
-    unsafe extern "system" fn c_get_bus_count(_this: *mut c_void, media: i32, _dir: i32) -> i32 {
+    unsafe extern "system" fn c_get_bus_count(_this: *mut c_void, media: i32, dir: i32) -> i32 {
         if media == kAudio {
+            // Instruments have no audio input.
+            if D::IS_INSTRUMENT && dir == kInput {
+                0
+            } else {
+                1
+            }
+        } else if media == kEvent && D::IS_INSTRUMENT && dir == kInput {
             1
         } else {
             0
@@ -224,17 +231,33 @@ impl<D: Dsp> PluginInstance<D> {
         index: i32,
         info: *mut BusInfo,
     ) -> tresult {
-        if info.is_null() || media != kAudio || index != 0 {
+        if info.is_null() || index != 0 {
             return kInvalidArgument;
         }
-        let info = &mut *info;
-        info.media_type = kAudio;
-        info.direction = dir;
-        info.channel_count = 2;
-        write_char16(&mut info.name, if dir == kInput { "Input" } else { "Output" });
-        info.bus_type = kMain;
-        info.flags = kDefaultActive;
-        kResultOk
+        if media == kAudio {
+            if D::IS_INSTRUMENT && dir == kInput {
+                return kInvalidArgument;
+            }
+            let info = &mut *info;
+            info.media_type = kAudio;
+            info.direction = dir;
+            info.channel_count = 2;
+            write_char16(&mut info.name, if dir == kInput { "Input" } else { "Output" });
+            info.bus_type = kMain;
+            info.flags = kDefaultActive;
+            kResultOk
+        } else if media == kEvent && D::IS_INSTRUMENT && dir == kInput {
+            let info = &mut *info;
+            info.media_type = kEvent;
+            info.direction = dir;
+            info.channel_count = 16;
+            write_char16(&mut info.name, "MIDI In");
+            info.bus_type = kMain;
+            info.flags = kDefaultActive;
+            kResultOk
+        } else {
+            kInvalidArgument
+        }
     }
     unsafe extern "system" fn c_get_routing_info(
         _this: *mut c_void,
@@ -246,11 +269,17 @@ impl<D: Dsp> PluginInstance<D> {
     unsafe extern "system" fn c_activate_bus(
         _this: *mut c_void,
         media: i32,
-        _dir: i32,
+        dir: i32,
         index: i32,
         _state: TBool,
     ) -> tresult {
-        if media == kAudio && index == 0 {
+        let valid = index == 0
+            && match media {
+                m if m == kAudio => !(D::IS_INSTRUMENT && dir == kInput),
+                m if m == kEvent => D::IS_INSTRUMENT && dir == kInput,
+                _ => false,
+            };
+        if valid {
             kResultOk
         } else {
             kInvalidArgument
@@ -312,14 +341,18 @@ impl<D: Dsp> PluginInstance<D> {
         outputs: *mut u64,
         num_outs: i32,
     ) -> tresult {
-        // Fixed stereo in/out.
-        if num_ins == 1
-            && num_outs == 1
-            && !inputs.is_null()
-            && !outputs.is_null()
-            && *inputs == SPEAKER_STEREO
-            && *outputs == SPEAKER_STEREO
-        {
+        // Fixed stereo out; effects add a fixed stereo in.
+        let ok = if D::IS_INSTRUMENT {
+            num_ins == 0 && num_outs == 1 && !outputs.is_null() && *outputs == SPEAKER_STEREO
+        } else {
+            num_ins == 1
+                && num_outs == 1
+                && !inputs.is_null()
+                && !outputs.is_null()
+                && *inputs == SPEAKER_STEREO
+                && *outputs == SPEAKER_STEREO
+        };
+        if ok {
             kResultTrue
         } else {
             kResultFalse
@@ -327,11 +360,11 @@ impl<D: Dsp> PluginInstance<D> {
     }
     unsafe extern "system" fn p_get_bus_arrangement(
         _this: *mut c_void,
-        _dir: i32,
+        dir: i32,
         index: i32,
         arr: *mut u64,
     ) -> tresult {
-        if arr.is_null() || index != 0 {
+        if arr.is_null() || index != 0 || (D::IS_INSTRUMENT && dir == kInput) {
             return kInvalidArgument;
         }
         *arr = SPEAKER_STEREO;
@@ -412,35 +445,103 @@ impl<D: Dsp> PluginInstance<D> {
         if data.symbolic_sample_size != kSample32 {
             return kNotImplemented;
         }
-        if data.num_inputs < 1
-            || data.num_outputs < 1
-            || data.inputs.is_null()
-            || data.outputs.is_null()
-        {
+        if data.num_outputs < 1 || data.outputs.is_null() {
             return kResultOk;
         }
 
-        let in_bus = &*data.inputs;
+        // Collect this block's note events (instruments only), sorted by
+        // sample offset. Fixed-capacity: keep the audio thread heap-free.
+        let mut events = [NoteEvent {
+            sample_offset: 0,
+            kind: NoteKind::Off { pitch: 0 },
+        }; 128];
+        let mut n_events = 0usize;
+        if D::IS_INSTRUMENT && !data.input_events.is_null() {
+            let list = data.input_events as *mut IEventListPtr;
+            let vt = &*(*list).vtbl;
+            let count = (vt.get_event_count)(list.cast());
+            for i in 0..count {
+                if n_events == events.len() {
+                    break;
+                }
+                let mut ev = std::mem::zeroed::<Event>();
+                if (vt.get_event)(list.cast(), i, &mut ev) != kResultOk {
+                    continue;
+                }
+                let offset = ev.sample_offset.max(0) as u32;
+                let kind = match ev.event_type {
+                    K_NOTE_ON_EVENT => {
+                        let on = ev.payload.note_on;
+                        // MIDI convention: note-on at zero velocity is off.
+                        if on.velocity > 0.0 {
+                            NoteKind::On {
+                                pitch: on.pitch.clamp(0, 127) as u8,
+                                velocity: on.velocity,
+                            }
+                        } else {
+                            NoteKind::Off {
+                                pitch: on.pitch.clamp(0, 127) as u8,
+                            }
+                        }
+                    }
+                    K_NOTE_OFF_EVENT => NoteKind::Off {
+                        pitch: ev.payload.note_off.pitch.clamp(0, 127) as u8,
+                    },
+                    _ => continue,
+                };
+                events[n_events] = NoteEvent {
+                    sample_offset: offset,
+                    kind,
+                };
+                n_events += 1;
+            }
+            events[..n_events].sort_unstable_by_key(|e| e.sample_offset);
+        }
+
         let out_bus = &mut *data.outputs;
         let num_samples = data.num_samples as usize;
-        let nch = in_bus.num_channels.min(out_bus.num_channels).clamp(0, 2) as usize;
-        if nch == 0 || in_bus.buffers.is_null() || out_bus.buffers.is_null() {
+        if out_bus.buffers.is_null() {
             return kResultOk;
         }
 
-        // Copy input into output (host may or may not process in place),
-        // then hand the DSP the output buffers to work on in place.
         let mut ptrs: [*mut f32; 2] = [null_mut(); 2];
-        for ch in 0..nch {
-            let ip = *in_bus.buffers.add(ch) as *mut f32;
-            let op = *out_bus.buffers.add(ch) as *mut f32;
-            if ip.is_null() || op.is_null() {
+        let nch;
+        if D::IS_INSTRUMENT {
+            // No audio input: hand the DSP zeroed output buffers.
+            nch = out_bus.num_channels.clamp(0, 2) as usize;
+            if nch == 0 {
                 return kResultOk;
             }
-            if op != ip {
-                std::ptr::copy_nonoverlapping(ip, op, num_samples);
+            for ch in 0..nch {
+                let op = *out_bus.buffers.add(ch) as *mut f32;
+                if op.is_null() {
+                    return kResultOk;
+                }
+                std::ptr::write_bytes(op, 0, num_samples);
+                ptrs[ch] = op;
             }
-            ptrs[ch] = op;
+        } else {
+            if data.num_inputs < 1 || data.inputs.is_null() {
+                return kResultOk;
+            }
+            let in_bus = &*data.inputs;
+            nch = in_bus.num_channels.min(out_bus.num_channels).clamp(0, 2) as usize;
+            if nch == 0 || in_bus.buffers.is_null() {
+                return kResultOk;
+            }
+            // Copy input into output (host may or may not process in
+            // place), then hand the DSP the output buffers.
+            for ch in 0..nch {
+                let ip = *in_bus.buffers.add(ch) as *mut f32;
+                let op = *out_bus.buffers.add(ch) as *mut f32;
+                if ip.is_null() || op.is_null() {
+                    return kResultOk;
+                }
+                if op != ip {
+                    std::ptr::copy_nonoverlapping(ip, op, num_samples);
+                }
+                ptrs[ch] = op;
+            }
         }
 
         let mut slices: [&mut [f32]; 2] = [
@@ -456,7 +557,12 @@ impl<D: Dsp> PluginInstance<D> {
             store: &me.params,
             defs: D::PARAMS,
         };
-        (*me.dsp.get()).process(&mut slices[..nch], &values, &me.meters);
+        (*me.dsp.get()).process_with_events(
+            &mut slices[..nch],
+            &events[..n_events],
+            &values,
+            &me.meters,
+        );
 
         out_bus.silence_flags = 0;
         kResultOk

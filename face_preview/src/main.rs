@@ -101,4 +101,21 @@ fn main() {
             .expect("render eq");
         println!("wrote {path}");
     }
+
+    // Lantern, three voices deep in a wobble.
+    {
+        use lantern_synth as s;
+        let (params, _store, meters) = stage::<s::LanternSynthDsp>();
+        meters.set(s::M_LEVEL_L, 0.55);
+        meters.set(s::M_LEVEL_R, 0.52);
+        meters.set(s::M_PEAK_L, 0.82);
+        meters.set(s::M_PEAK_R, 0.79);
+        meters.set(s::M_RMS_L, 0.34);
+        meters.set(s::M_RMS_R, 0.32);
+        meters.set(s::M_VOICES, 3.0);
+        let path = format!("{out}/synth.png");
+        preview::render_png(1360, 884, &theme, params, 90, &path, s::preview_face())
+            .expect("render synth");
+        println!("wrote {path}");
+    }
 }

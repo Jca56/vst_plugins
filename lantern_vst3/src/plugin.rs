@@ -337,11 +337,26 @@ impl ParamsHandle {
     }
 }
 
+/// A note event delivered to an instrument's process block.
+#[derive(Clone, Copy, Debug)]
+pub struct NoteEvent {
+    /// Offset into the block, in samples.
+    pub sample_offset: u32,
+    pub kind: NoteKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum NoteKind {
+    On { pitch: u8, velocity: f32 },
+    Off { pitch: u8 },
+}
+
 /// The audio-processing half of a plugin. Called on the host's audio thread;
 /// keep it allocation-free.
 ///
-/// Processing is in-place: the host input has already been copied into
-/// `buffers` when `process` runs.
+/// Effects process in place: the host input has already been copied into
+/// `buffers` when `process` runs. Instruments (`IS_INSTRUMENT`) get zeroed
+/// buffers plus the block's note events via `process_with_events`.
 pub trait Dsp: Send + 'static {
     const INFO: PluginInfo;
     const PARAMS: &'static [ParamDef];
@@ -349,6 +364,9 @@ pub trait Dsp: Send + 'static {
     const METERS: usize = 0;
     /// Editor factory; None = host draws its generic inline UI only.
     const EDITOR: Option<EditorFactory> = None;
+    /// True = no audio input, an event input bus, zeroed output buffers.
+    /// Pair with an "Instrument|..." subcategory in `INFO`.
+    const IS_INSTRUMENT: bool = false;
 
     fn new() -> Self;
 
@@ -360,5 +378,21 @@ pub trait Dsp: Send + 'static {
 
     /// Process `buffers` (one slice per channel, stereo) in place.
     /// Write live meter values (gain reduction etc.) into `meters`.
-    fn process(&mut self, buffers: &mut [&mut [f32]], params: &ParamValues, meters: &MeterStore);
+    /// Effects implement this; instruments may leave it and implement
+    /// `process_with_events` instead.
+    fn process(&mut self, _buffers: &mut [&mut [f32]], _params: &ParamValues, _meters: &MeterStore) {
+    }
+
+    /// Instrument entry point: `process`, plus this block's note events
+    /// sorted by sample offset. The default forwards to `process`, so
+    /// effects never see it.
+    fn process_with_events(
+        &mut self,
+        buffers: &mut [&mut [f32]],
+        _events: &[NoteEvent],
+        params: &ParamValues,
+        meters: &MeterStore,
+    ) {
+        self.process(buffers, params, meters);
+    }
 }

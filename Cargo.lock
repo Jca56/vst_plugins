@@ -178,6 +178,7 @@ dependencies = [
  "lantern_compressor",
  "lantern_eq",
  "lantern_keylight",
+ "lantern_synth",
  "lantern_ui",
  "lantern_vst3",
 ]
@@ -476,6 +477,14 @@ dependencies = [
 [[package]]
 name = "lantern_keylight"
 version = "0.1.0"
+dependencies = [
+ "lantern_ui",
+ "lantern_vst3",
+]
+
+[[package]]
+name = "lantern_synth"
+version = "0.2.0"
 dependencies = [
  "lantern_ui",
  "lantern_vst3",

@@ -400,6 +400,72 @@ pub struct IParamValueQueueVtbl {
     pub add_point: unsafe extern "system" fn(*mut c_void, i32, f64, *mut i32) -> tresult,
 }
 
+// ---------------------------------------------------------------------------
+// IEventList: note events the host hands an instrument each process block.
+// Layout cross-checked against the vst3-sys reference (ivstevents.rs):
+// the union carries pointer-bearing members, so it is 8-aligned and the
+// payload sits at offset 24.
+// ---------------------------------------------------------------------------
+
+pub const K_NOTE_ON_EVENT: u16 = 0;
+pub const K_NOTE_OFF_EVENT: u16 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NoteOnEvent {
+    pub channel: i16,
+    pub pitch: i16,
+    pub tuning: f32,
+    pub velocity: f32,
+    pub length: i32,
+    pub note_id: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NoteOffEvent {
+    pub channel: i16,
+    pub pitch: i16,
+    pub velocity: f32,
+    pub note_id: i32,
+    pub tuning: f32,
+}
+
+#[repr(C)]
+pub union EventPayload {
+    pub note_on: NoteOnEvent,
+    pub note_off: NoteOffEvent,
+    /// Widest members hold pointers: keeps size (24) and alignment (8)
+    /// matching the SDK union.
+    pub raw: [u64; 3],
+}
+
+#[repr(C)]
+pub struct Event {
+    pub bus_index: i32,
+    pub sample_offset: i32,
+    pub ppq_position: f64,
+    pub flags: u16,
+    pub event_type: u16,
+    pub payload: EventPayload,
+}
+
+#[repr(C)]
+pub struct IEventListPtr {
+    pub vtbl: *const IEventListVtbl,
+}
+
+#[repr(C)]
+pub struct IEventListVtbl {
+    pub query_interface:
+        unsafe extern "system" fn(*mut c_void, *const TUID, *mut *mut c_void) -> tresult,
+    pub add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    pub release: unsafe extern "system" fn(*mut c_void) -> u32,
+    pub get_event_count: unsafe extern "system" fn(*mut c_void) -> i32,
+    pub get_event: unsafe extern "system" fn(*mut c_void, i32, *mut Event) -> tresult,
+    pub add_event: unsafe extern "system" fn(*mut c_void, *mut Event) -> tresult,
+}
+
 /// IPlugFrame: the host object a view asks for its own resize.
 #[repr(C)]
 pub struct IPlugFramePtr {

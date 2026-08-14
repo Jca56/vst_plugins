@@ -11,3 +11,4 @@ lantern_vst3 = { path = "../lantern_vst3" }
 lantern_keylight = { path = "../lantern_keylight" }
 lantern_compressor = { path = "../lantern_compressor" }
 lantern_eq = { path = "../lantern_eq" }
+lantern_synth = { path = "../lantern_synth" }
