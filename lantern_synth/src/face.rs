@@ -11,13 +11,14 @@ use lantern_ui::lantern_gpu::{Color, Rect};
 use lantern_ui::{Theme, Ui, UiEditor};
 use lantern_vst3::plugin::{Editor, ParamsHandle};
 
-use crate::synth::{osc, Waveform};
+use crate::synth::{osc, svf_k, FilterMode, Waveform};
 use crate::{
     p_osc, M_KEYS, M_LEVEL_L, M_LEVEL_R, M_PEAK_L, M_PEAK_R, M_RMS_L, M_RMS_R, M_UI_NOTE,
-    OSC_DETUNE, OSC_ENABLE, OSC_PITCH, OSC_VOICES, OSC_VOLUME, OSC_WAVE,
+    OSC_DETUNE, OSC_ENABLE, OSC_PITCH, OSC_VOICES, OSC_VOLUME, OSC_WAVE, P_CUTOFF, P_FENV_AMT,
+    P_FLT_ON, P_FLT_TYPE, P_RES,
 };
 
-const WIN_W: u32 = 1496;
+const WIN_W: u32 = 1776;
 const WIN_H: u32 = 884;
 
 /// Keyboard range: C0 to C3 in Live's naming (Alva's home row on top).
@@ -46,6 +47,73 @@ fn sub_panel(ui: &mut Ui, rect: Rect) {
     let t = ui.theme;
     ui.painter.rect_filled(rect, 10.0, Color::from_rgb8(26, 26, 31));
     ui.painter.rect_border(rect, 10.0, 2.5, t.panel_border);
+}
+
+/// The filter room: power + type dropdown on top, the live response curve
+/// beneath (drawn from the same SVF math the audio runs), then
+/// CUTOFF | RES | ENV AMT with a spare slot for what comes later.
+fn filter_panel(ui: &mut Ui, r: Rect) {
+    sub_panel(ui, r);
+
+    ui.toggle(P_FLT_ON, Rect::new(r.x + 12.0, r.y + 14.0, 48.0, 48.0), "");
+    ui.dropdown(P_FLT_TYPE, Rect::new(r.x + 68.0, r.y + 14.0, r.w - 82.0, 48.0));
+
+    response_window(ui, Rect::new(r.x + 16.0, r.y + 74.0, r.w - 32.0, 130.0));
+
+    for (i, (param, label)) in [(P_CUTOFF, "CUTOFF"), (P_RES, "RES"), (P_FENV_AMT, "ENV AMT")]
+        .iter()
+        .enumerate()
+    {
+        ui.knob_cell(
+            *param,
+            Rect::new(r.x + 16.0 + i as f32 * 118.0, r.y + 216.0, 114.0, 190.0),
+            label,
+        );
+    }
+}
+
+/// The filter's magnitude response, live from the current cutoff, res,
+/// and type — what you hear is what it draws. Log frequency 20..20k,
+/// +/-24 dB.
+fn response_window(ui: &mut Ui, rect: Rect) {
+    let t = ui.theme;
+    ui.painter.rect_filled(rect, 8.0, t.well_deep);
+
+    let fc = ui.params.plain(P_CUTOFF) as f32;
+    let res = ui.params.plain(P_RES) as f32 / 100.0;
+    let k = svf_k(res);
+    let mode = FilterMode::from_index((ui.params.normalized(P_FLT_TYPE) * 3.0).round() as usize);
+    let on = ui.params.normalized(P_FLT_ON) >= 0.5;
+
+    let y0 = rect.center_y();
+    ui.painter.line(rect.x + 6.0, y0, rect.x + rect.w - 6.0, y0, 1.0, t.track);
+
+    let pad = 10.0;
+    let n = 128;
+    let mut prev: Option<(f32, f32)> = None;
+    let color = if on { t.accent } else { t.text_dim.with_alpha(0.4) };
+    ui.painter.push_clip(rect.inset(3.0));
+    for i in 0..=n {
+        let tx = i as f32 / n as f32;
+        let f = 20.0 * 1000f32.powf(tx);
+        let x_rel = f / fc.max(1.0);
+        let d = ((1.0 - x_rel * x_rel).powi(2) + (k * x_rel).powi(2)).sqrt().max(1e-6);
+        let mag = match mode {
+            FilterMode::Lowpass => 1.0 / d,
+            FilterMode::Bandpass => k * x_rel / d,
+            FilterMode::Highpass => x_rel * x_rel / d,
+            FilterMode::Notch => (1.0 - x_rel * x_rel).abs() / d,
+        };
+        let db = (20.0 * mag.max(1e-4).log10()).clamp(-40.0, 40.0);
+        let x = rect.x + pad + tx * (rect.w - pad * 2.0);
+        let y = y0 - db / 24.0 * rect.h * 0.42;
+        if let Some((px, py)) = prev {
+            ui.painter.line(px, py, x, y, 2.5, color);
+        }
+        prev = Some((x, y));
+    }
+    ui.painter.pop_clip();
+    ui.painter.rect_border(rect, 8.0, 2.5, t.panel_border);
 }
 
 /// The shape window: today a still of the selected waveform, one day the
@@ -87,27 +155,26 @@ impl Face {
     fn draw(&mut self, ui: &mut Ui) {
         ui.face();
 
-        // Three rooms across the top: OSC 1 | OSC 2 | FILTER (still empty).
-        self.osc_panel(ui, Rect::new(44.0, 44.0, 406.0, 520.0), 0);
-        self.osc_panel(ui, Rect::new(481.0, 44.0, 406.0, 520.0), 1);
-        sub_panel(ui, Rect::new(918.0, 44.0, 406.0, 520.0));
+        // Three wide rooms across the top: OSC 1 | OSC 2 | FILTER.
+        self.osc_panel(ui, Rect::new(44.0, 44.0, 500.0, 420.0), 0);
+        self.osc_panel(ui, Rect::new(574.0, 44.0, 500.0, 420.0), 1);
+        filter_panel(ui, Rect::new(1104.0, 44.0, 500.0, 420.0));
 
         // Output meter ends above the keyboard.
         ui.level_meter(
-            Rect::new(1372.0, 44.0, 80.0, 630.0),
+            Rect::new(1652.0, 44.0, 80.0, 630.0),
             (M_LEVEL_L, M_LEVEL_R),
             (M_PEAK_L, M_PEAK_R),
             (M_RMS_L, M_RMS_R),
         );
 
-        self.keyboard(ui, Rect::new(44.0, 690.0, 1408.0, 150.0));
+        self.keyboard(ui, Rect::new(44.0, 690.0, 1688.0, 150.0));
     }
 
-    /// One oscillator room: power square + wave dropdown across the top,
-    /// the wave window beneath (the oscilloscope-to-be), then
-    /// PITCH | VOLUME | (VOICES over DETUNE) left to right.
+    /// One oscillator room, wide format: power square + wave dropdown on
+    /// top, the wave window (oscilloscope-to-be) beneath, then four equal
+    /// knobs: VOICES | DETUNE | PITCH | VOLUME.
     fn osc_panel(&mut self, ui: &mut Ui, r: Rect, o: usize) {
-        let t = ui.theme;
         sub_panel(ui, r);
 
         ui.toggle(p_osc(o, OSC_ENABLE), Rect::new(r.x + 12.0, r.y + 14.0, 48.0, 48.0), "");
@@ -116,14 +183,23 @@ impl Face {
         let wave = Waveform::from_index(
             (ui.params.normalized(p_osc(o, OSC_WAVE)) * 7.0).round() as usize,
         );
-        wave_window(ui, Rect::new(r.x + 14.0, r.y + 74.0, r.w - 28.0, 130.0), wave);
+        wave_window(ui, Rect::new(r.x + 16.0, r.y + 74.0, r.w - 32.0, 130.0), wave);
 
-        ui.knob_cell(p_osc(o, OSC_PITCH), Rect::new(r.x + 14.0, r.y + 216.0, 122.0, 190.0), "PITCH");
-        ui.knob_cell(p_osc(o, OSC_VOLUME), Rect::new(r.x + 142.0, r.y + 216.0, 122.0, 190.0), "VOLUME");
-
-        ui.label_centered("VOICES", r.x + 330.0, r.y + 216.0, 21.0, t.text_dim);
-        ui.stepper_box(p_osc(o, OSC_VOICES), Rect::new(r.x + 294.0, r.y + 254.0, 72.0, 48.0));
-        ui.knob_cell(p_osc(o, OSC_DETUNE), Rect::new(r.x + 268.0, r.y + 322.0, 124.0, 190.0), "DETUNE");
+        for (i, (which, label)) in [
+            (OSC_VOICES, "VOICES"),
+            (OSC_DETUNE, "DETUNE"),
+            (OSC_PITCH, "PITCH"),
+            (OSC_VOLUME, "VOLUME"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            ui.knob_cell(
+                p_osc(o, *which),
+                Rect::new(r.x + 16.0 + i as f32 * 118.0, r.y + 216.0, 114.0, 190.0),
+                label,
+            );
+        }
     }
 
     /// C0..C3, playable: the mouse writes a gate the DSP edge-detects into

@@ -14,7 +14,9 @@ mod synth;
 use lantern_vst3::plugin::{
     Dsp, EditorFactory, MeterStore, NoteEvent, NoteKind, ParamDef, ParamValues, PluginInfo,
 };
-use synth::{naive_wave, EnvStage, OscSettings, Voice, VoiceParams, Waveform, MAX_UNISON};
+use synth::{
+    naive_wave, EnvStage, FilterMode, OscSettings, Voice, VoiceParams, Waveform, MAX_UNISON,
+};
 
 pub use face::preview_face;
 
@@ -49,6 +51,8 @@ pub const P_FLT_S: usize = 25;
 pub const P_FLT_R: usize = 26;
 pub const P_DRIVE: usize = 27;
 pub const P_GAIN: usize = 28;
+pub const P_FLT_TYPE: usize = 29;
+pub const P_FLT_ON: usize = 30;
 
 /// Meter slots (pub so the preview harness can stage demo values).
 pub const M_LEVEL_L: usize = 0;
@@ -88,6 +92,10 @@ fn osc_wave_fmt(n: f64) -> String {
 
 fn lfo_wave_fmt(n: f64) -> String {
     ["Sine", "Tri", "Saw", "Sqr"][((n * 3.0).round() as usize).min(3)].to_string()
+}
+
+fn flt_type_fmt(n: f64) -> String {
+    ["Lowpass", "Bandpass", "Highpass", "Notch"][((n * 3.0).round() as usize).min(3)].to_string()
 }
 
 fn detune_plain(n: f64) -> f64 {
@@ -315,6 +323,8 @@ impl Dsp for LanternSynthDsp {
         p!(26, "Flt Release","",  0.6220,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
         p!(27, "Drive",     "%",  0.1,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
         p!(28, "Gain",      "dB", 0.9,       0, Some(gain_plain), Some(gain_norm), Some(gain_fmt)),
+        p!(29, "Flt Type",  "",   0.0,       3, None, None, Some(flt_type_fmt)),
+        p!(30, "Flt On",    "",   1.0,       1, None, None, Some(on_fmt)),
     ];
 
     const METERS: usize = 9;
@@ -427,6 +437,9 @@ impl Dsp for LanternSynthDsp {
 
         // Per-block discrete values.
         let lfo_wave = Waveform::from_index((params.normalized(P_LFO_WAVE) * 3.0).round() as usize);
+        let flt_on = params.normalized(P_FLT_ON) >= 0.5;
+        let flt_mode =
+            FilterMode::from_index((params.normalized(P_FLT_TYPE) * 3.0).round() as usize);
         let (amp_a, amp_d, amp_s, amp_r) = (
             params.plain(P_AMP_A) as f32,
             params.plain(P_AMP_D) as f32,
@@ -468,6 +481,8 @@ impl Dsp for LanternSynthDsp {
             let vp = VoiceParams {
                 osc,
                 fm_amount: self.sm[S_FM],
+                flt_on,
+                flt_mode,
                 cutoff: self.sm[S_CUTOFF],
                 resonance: self.sm[S_RES],
                 filt_env_oct: self.sm[S_FENV],

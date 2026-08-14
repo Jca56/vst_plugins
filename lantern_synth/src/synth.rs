@@ -55,6 +55,8 @@ pub struct OscSettings {
 pub struct VoiceParams {
     pub osc: [OscSettings; 2],
     pub fm_amount: f32,
+    pub flt_on: bool,
+    pub flt_mode: FilterMode,
     pub cutoff: f32,
     pub resonance: f32,
     pub filt_env_oct: f32,
@@ -155,9 +157,19 @@ impl Voice {
         let mixed = s1 * p.osc[0].volume + s2 * p.osc[1].volume;
 
         // Cutoff modulated in octaves (musical) by filter env + global LFO.
-        let mod_oct = p.filt_env_oct * fenv + p.lfo_oct * lfo_value;
-        let cutoff = (p.cutoff * 2.0f32.powf(mod_oct)).clamp(20.0, p.sr * 0.45);
-        let filtered = self.filter.process_lp(mixed, cutoff, p.resonance, p.sr);
+        let filtered = if p.flt_on {
+            let mod_oct = p.filt_env_oct * fenv + p.lfo_oct * lfo_value;
+            let cutoff = (p.cutoff * 2.0f32.powf(mod_oct)).clamp(20.0, p.sr * 0.45);
+            let (lp, bp, hp) = self.filter.process(mixed, cutoff, p.resonance, p.sr);
+            match p.flt_mode {
+                FilterMode::Lowpass => lp,
+                FilterMode::Bandpass => bp,
+                FilterMode::Highpass => hp,
+                FilterMode::Notch => lp + hp,
+            }
+        } else {
+            mixed
+        };
 
         filtered * amp * self.velocity
     }
@@ -246,10 +258,12 @@ impl Svf {
         self.ic2 = 0.0;
     }
 
-    pub fn process_lp(&mut self, v0: f32, cutoff: f32, res: f32, sr: f32) -> f32 {
+    /// One TPT step; returns (lowpass, bandpass, highpass) — the SVF gives
+    /// all three at once, `FilterMode` just picks.
+    pub fn process(&mut self, v0: f32, cutoff: f32, res: f32, sr: f32) -> (f32, f32, f32) {
         let g = (PI * cutoff / sr).tan();
         // res in [0,1] -> k = 1/Q from 2 (gentle) down to ~0.02 (screaming).
-        let k = (2.0 - 1.98 * res).max(0.02);
+        let k = svf_k(res);
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         let a3 = g * a2;
@@ -258,7 +272,33 @@ impl Svf {
         let v2 = self.ic2 + a2 * self.ic1 + a3 * v3;
         self.ic1 = 2.0 * v1 - self.ic1;
         self.ic2 = 2.0 * v2 - self.ic2;
-        v2 // low-pass output
+        let hp = v0 - k * v1 - v2;
+        (v2, v1, hp)
+    }
+}
+
+/// Resonance knob -> the SVF's damping k (shared with the face's response
+/// curve so drawn and heard agree).
+pub fn svf_k(res: f32) -> f32 {
+    (2.0 - 1.98 * res).max(0.02)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FilterMode {
+    Lowpass,
+    Bandpass,
+    Highpass,
+    Notch,
+}
+
+impl FilterMode {
+    pub fn from_index(i: usize) -> Self {
+        match i {
+            0 => Self::Lowpass,
+            1 => Self::Bandpass,
+            2 => Self::Highpass,
+            _ => Self::Notch,
+        }
     }
 }
 
