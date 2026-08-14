@@ -234,12 +234,12 @@ impl LanternSynthDsp {
 
 impl Dsp for LanternSynthDsp {
     const INFO: PluginInfo = PluginInfo {
-        name: "Lantern",
+        name: "Lantern Blacklight",
         vendor: "Alva",
-        version: "0.2.0",
+        version: "0.3.0",
         url: "https://github.com/",
         email: "noreply@example.com",
-        class_id: *b"LanternSynth2Alv",
+        class_id: *b"LanternBlacklite",
         subcategories: "Instrument|Synth",
     };
 
