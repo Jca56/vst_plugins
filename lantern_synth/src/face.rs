@@ -7,7 +7,7 @@
 //! (drag = glissando), keys light for whatever the voices are sounding,
 //! MIDI included, out-of-range notes folding into view by octaves.
 
-use lantern_ui::lantern_gpu::{Color, Rect};
+use lantern_ui::lantern_gpu::{BackgroundImage, Color, Rect};
 use lantern_ui::{Theme, Ui, UiEditor};
 use lantern_vst3::plugin::{Editor, ParamsHandle};
 
@@ -25,9 +25,30 @@ const WIN_H: u32 = 884;
 const KB_LOW: u8 = 24;
 const WHITE_KEYS: usize = 22; // 3 octaves + the top C
 
+/// The fire experiment: Alva's background image, embedded raw (888x442
+/// RGBA), drawn under a translucent panel. If the verdict is "stupid",
+/// this and `face_glass` revert to `face()` in one commit.
+static BG_RGBA: &[u8] = include_bytes!("../assets/bg.rgba");
+
+pub fn background() -> BackgroundImage {
+    BackgroundImage {
+        rgba: BG_RGBA.to_vec(),
+        width: 888,
+        height: 442,
+        alpha: 0.38,
+    }
+}
+
 pub fn make_editor(params: ParamsHandle) -> Box<dyn Editor> {
     let mut face = Face::default();
-    UiEditor::create(WIN_W, WIN_H, Theme::lantern(), params, move |ui| face.draw(ui))
+    UiEditor::create_with_background(
+        WIN_W,
+        WIN_H,
+        Theme::lantern(),
+        Some(background()),
+        params,
+        move |ui| face.draw(ui),
+    )
 }
 
 /// The face closure for the preview harness. Render at 1496x884.
@@ -155,7 +176,7 @@ fn wave_window(ui: &mut Ui, rect: Rect, wave: Waveform) {
 
 impl Face {
     fn draw(&mut self, ui: &mut Ui) {
-        ui.face();
+        ui.face_glass(0.72);
 
         // Three wide rooms across the top: OSC 1 | OSC 2 | FILTER.
         self.osc_panel(ui, Rect::new(44.0, 44.0, 500.0, 420.0), 0);

@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::time::Instant;
 
-use lantern_gpu::{GpuContext, Painter};
+use lantern_gpu::{BackgroundImage, GpuContext, ImagePass, Painter, TextPass};
 use lantern_vst3::plugin::{Editor, MouseInput, ParamsHandle};
 
 use crate::text::TextRenderer;
@@ -17,6 +17,7 @@ struct GpuState {
     gpu: GpuContext,
     painter: Painter,
     text: TextRenderer,
+    image: Option<ImagePass>,
 }
 
 pub struct UiEditor {
@@ -33,6 +34,8 @@ pub struct UiEditor {
     last_synth: Option<char>,
     /// Size the face asked for, awaiting host negotiation.
     pending_resize: Option<(u32, u32)>,
+    /// Background image drawn under everything, if the face wants one.
+    background: Option<BackgroundImage>,
 }
 
 impl UiEditor {
@@ -40,6 +43,18 @@ impl UiEditor {
         width: u32,
         height: u32,
         theme: Theme,
+        params: ParamsHandle,
+        build: impl FnMut(&mut Ui) + 'static,
+    ) -> Box<dyn Editor> {
+        Self::create_with_background(width, height, theme, None, params, build)
+    }
+
+    /// Like `create`, with a background image drawn under everything.
+    pub fn create_with_background(
+        width: u32,
+        height: u32,
+        theme: Theme,
+        background: Option<BackgroundImage>,
         params: ParamsHandle,
         build: impl FnMut(&mut Ui) + 'static,
     ) -> Box<dyn Editor> {
@@ -55,6 +70,7 @@ impl UiEditor {
             attached_at: None,
             last_synth: None,
             pending_resize: None,
+            background,
         })
     }
 
@@ -74,7 +90,13 @@ impl Editor for UiEditor {
             Ok(gpu) => {
                 let painter = Painter::new(&gpu);
                 let text = TextRenderer::new(&gpu);
-                self.state = Some(GpuState { gpu, painter, text });
+                let image = self.background.as_ref().map(|bg| ImagePass::new(&gpu, bg));
+                self.state = Some(GpuState {
+                    gpu,
+                    painter,
+                    text,
+                    image,
+                });
                 self.attached_at = Some(Instant::now());
             }
             Err(err) => eprintln!("[lantern-ui] GPU init failed: {err}"),
@@ -137,11 +159,34 @@ impl Editor for UiEditor {
             self.pending_resize = size_request;
         }
 
-        if state
-            .painter
-            .render_with_text(&state.gpu, &mut state.text, self.theme.bg)
-            .is_err()
-        {
+        let bg = self.theme.bg;
+        let render_result = (|| -> Result<(), lantern_gpu::wgpu::SurfaceError> {
+            let mut frame = state.gpu.begin_frame("Lantern UI Frame")?;
+            let view = frame.view().clone();
+            if let Some(img) = &state.image {
+                img.render(frame.encoder_mut(), &view, bg);
+            }
+            let layers = state.painter.layer_count();
+            for layer in 0..layers {
+                let clear = if layer == 0 && state.image.is_none() {
+                    Some(bg)
+                } else {
+                    None
+                };
+                state
+                    .painter
+                    .render_layer(layer, &state.gpu, frame.encoder_mut(), &view, clear);
+                state
+                    .text
+                    .render_text_layer(&state.gpu, frame.encoder_mut(), &view, layer);
+                if layer + 1 < layers {
+                    frame.flush(&state.gpu);
+                }
+            }
+            frame.submit(&state.gpu.queue);
+            Ok(())
+        })();
+        if render_result.is_err() {
             if let Some(surface) = &state.gpu.surface {
                 surface.configure(&state.gpu.device, &state.gpu.config);
             }

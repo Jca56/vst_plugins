@@ -159,6 +159,19 @@ impl Ui<'_> {
         panel
     }
 
+    /// `face`, but the panel fill is translucent so a background image
+    /// glows through. Same chrome otherwise.
+    pub fn face_glass(&mut self, panel_alpha: f32) -> Rect {
+        let t = self.theme;
+        let panel = Rect::new(14.0, 14.0, self.width - 28.0, self.height - 28.0);
+        self.painter
+            .shadow(panel, 10.0, 10.0, Color::rgba(0.0, 0.0, 0.0, 0.5), 0.0, 5.0);
+        self.painter
+            .rect_filled(panel, 10.0, t.panel.with_alpha(panel_alpha));
+        self.painter.rect_border(panel, 10.0, 3.0, t.panel_border);
+        panel
+    }
+
     /// Thin Lantern gradient hairline — the last surviving gradient.
     /// Fades out at both ends: dark into the panel on the left, orange
     /// dissolving to transparent on the right.
@@ -314,7 +327,8 @@ impl Ui<'_> {
         // Body, track, value arc.
         self.painter
             .circle_filled(cx, cy, radius - track_w - 6.0, t.well);
-        self.painter.arc(cx, cy, radius, start, range, track_w, 0.0, t.track);
+        self.painter
+            .arc(cx, cy, radius, start, range, track_w, 0.0, t.track.lighten(0.16));
         if value > 0.001 {
             self.painter.arc(
                 cx,

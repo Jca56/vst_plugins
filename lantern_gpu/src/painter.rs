@@ -940,11 +940,17 @@ impl Painter {
         let mut frame = gpu.begin_frame("Lantern 2D+Text Encoder")?;
         let view = frame.view().clone();
         // Interleave shape and text sub-passes per layer, so an overlay's
-        // panel (layer 1 shapes) draws over the base layer's text.
+        // panel (layer 1 shapes) draws over the base layer's text. The
+        // flush between layers is load-bearing: the glyph pipeline reuses
+        // one vertex buffer, and without a submit boundary a later layer's
+        // buffer write lands before the earlier layer's draw executes.
         for layer in 0..self.layer_count() {
             let clear = if layer == 0 { Some(clear_color) } else { None };
             self.render_layer(layer, gpu, frame.encoder_mut(), &view, clear);
             text.render_text_layer(gpu, frame.encoder_mut(), &view, layer);
+            if layer + 1 < self.layer_count() {
+                frame.flush(gpu);
+            }
         }
         frame.submit(&gpu.queue);
         Ok(())

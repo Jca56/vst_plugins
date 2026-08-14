@@ -6,7 +6,7 @@
 //! encodes it as an uncompressed-deflate PNG (ours, no deps).
 
 use lantern_gpu::wgpu;
-use lantern_gpu::{GpuContext, Painter, TextPass};
+use lantern_gpu::{BackgroundImage, GpuContext, ImagePass, Painter, TextPass};
 use lantern_vst3::plugin::ParamsHandle;
 
 use crate::text::TextRenderer;
@@ -22,9 +22,25 @@ pub fn render_png(
     params: ParamsHandle,
     frames: u32,
     path: &str,
+    build: impl FnMut(&mut Ui),
+) -> Result<(), String> {
+    render_png_with_background(width, height, theme, None, params, frames, path, build)
+}
+
+/// `render_png` with an optional background image under everything.
+#[allow(clippy::too_many_arguments)]
+pub fn render_png_with_background(
+    width: u32,
+    height: u32,
+    theme: &Theme,
+    background: Option<&BackgroundImage>,
+    params: ParamsHandle,
+    frames: u32,
+    path: &str,
     mut build: impl FnMut(&mut Ui),
 ) -> Result<(), String> {
     let gpu = GpuContext::offscreen(width, height).map_err(|e| e.to_string())?;
+    let image = background.map(|bg| ImagePass::new(&gpu, bg));
     let mut painter = Painter::new(&gpu);
     let mut text = TextRenderer::new(&gpu);
     let mut input = InputState::default();
@@ -64,17 +80,29 @@ pub fn render_png(
         build(&mut ui);
         input.end_frame();
 
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("face-preview"),
-            });
+        // One submit per layer: the glyph pipeline shares a vertex buffer
+        // across layers, so each layer's write must land before the next
+        // layer's write is staged.
         for layer in 0..painter.layer_count() {
-            let clear = if layer == 0 { Some(theme.bg) } else { None };
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("face-preview"),
+                });
+            if layer == 0 {
+                if let Some(img) = &image {
+                    img.render(&mut encoder, &view, theme.bg);
+                }
+            }
+            let clear = if layer == 0 && image.is_none() {
+                Some(theme.bg)
+            } else {
+                None
+            };
             painter.render_layer(layer, &gpu, &mut encoder, &view, clear);
             text.render_text_layer(&gpu, &mut encoder, &view, layer);
+            gpu.queue.submit(Some(encoder.finish()));
         }
-        gpu.queue.submit(Some(encoder.finish()));
     }
 
     // Read the final frame back (rows padded to 256 bytes for the copy).

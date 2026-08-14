@@ -18,7 +18,7 @@ use synth::{
     naive_wave, EnvStage, FilterMode, OscSettings, Voice, VoiceParams, Waveform, MAX_UNISON,
 };
 
-pub use face::preview_face;
+pub use face::{background, preview_face};
 
 const NUM_VOICES: usize = 16;
 

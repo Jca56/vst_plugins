@@ -116,8 +116,18 @@ fn main() {
         // Light a C1 power chord across the keyboard: C1, G1, C2.
         meters.set(s::M_KEYS, ((1u64 << 12) | (1 << 19) | (1 << 24)) as f64);
         let path = format!("{out}/synth.png");
-        preview::render_png(1776, 884, &theme, params, 90, &path, s::preview_face())
-            .expect("render synth");
+        let bg = s::background();
+        preview::render_png_with_background(
+            1776,
+            884,
+            &theme,
+            Some(&bg),
+            params,
+            90,
+            &path,
+            s::preview_face(),
+        )
+        .expect("render synth");
         println!("wrote {path}");
     }
 }

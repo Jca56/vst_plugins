@@ -8,6 +8,7 @@
 
 pub mod gfx;
 pub mod glyph;
+pub mod image;
 mod pod;
 
 mod color;
@@ -18,6 +19,7 @@ mod shapes;
 
 pub use color::Color;
 pub use gfx::{Frame, FrameTimingSnapshot, GpuContext};
+pub use image::{BackgroundImage, ImagePass};
 pub use painter::{Painter, TextPass};
 pub use rect::Rect;
 
