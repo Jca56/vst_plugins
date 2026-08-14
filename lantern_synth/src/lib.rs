@@ -14,9 +14,7 @@ mod synth;
 use lantern_vst3::plugin::{
     Dsp, EditorFactory, MeterStore, NoteEvent, NoteKind, ParamDef, ParamValues, PluginInfo,
 };
-use synth::{
-    naive_wave, EnvStage, FilterMode, OscSettings, Voice, VoiceParams, Waveform, MAX_UNISON,
-};
+use synth::{EnvStage, FilterMode, OscSettings, Voice, VoiceParams, Waveform, MAX_UNISON};
 
 pub use face::{background, preview_face};
 
@@ -53,6 +51,17 @@ pub const P_DRIVE: usize = 27;
 pub const P_GAIN: usize = 28;
 pub const P_FLT_TYPE: usize = 29;
 pub const P_FLT_ON: usize = 30;
+// Step LFOs: 3 of them, each 1 rate + 16 drawable steps (ids 31..=81).
+pub const LFOS: usize = 3;
+pub const LFO_STEPS: usize = 16;
+pub fn p_lfo_rate(l: usize) -> usize {
+    31 + l * (LFO_STEPS + 1)
+}
+pub fn p_lfo_step(l: usize, s: usize) -> usize {
+    31 + l * (LFO_STEPS + 1) + 1 + s
+}
+/// Tempo-sync divisions, in beats (4/4): index matches the Rate param.
+pub const LFO_DIV_BEATS: [f64; 8] = [16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125];
 
 /// Meter slots (pub so the preview harness can stage demo values).
 pub const M_LEVEL_L: usize = 0;
@@ -63,12 +72,14 @@ pub const M_RMS_L: usize = 4;
 pub const M_RMS_R: usize = 5;
 /// Active voice count, for the face.
 pub const M_VOICES: usize = 6;
-/// Bitmask of sounding keys on the face keyboard: bit i = MIDI note 24+i
-/// (C0..=C3 in Live naming); out-of-range notes fold by octaves into view.
+/// Bitmask of sounding keys on the face keyboard: bit i = MIDI note 48+i
+/// (C2..=C4 in Live naming); out-of-range notes fold by octaves into view.
 pub const M_KEYS: usize = 7;
 /// UI keyboard gate, written by the editor: note+1 while a key is held,
 /// 0 when released. The DSP edge-detects it into note on/off.
 pub const M_UI_NOTE: usize = 8;
+/// Each LFO's current phase (0..1), for the editor's playhead.
+pub const M_LFO_PHASE: usize = 9;
 
 // ============================================================================
 // Parameter mappings
@@ -96,6 +107,12 @@ fn lfo_wave_fmt(n: f64) -> String {
 
 fn flt_type_fmt(n: f64) -> String {
     ["Lowpass", "Bandpass", "Highpass", "Notch"][((n * 3.0).round() as usize).min(3)].to_string()
+}
+
+fn lfo_div_fmt(n: f64) -> String {
+    ["4 Bar", "2 Bar", "1 Bar", "1/2", "1/4", "1/8", "1/16", "1/32"]
+        [((n * 7.0).round() as usize).min(7)]
+    .to_string()
 }
 
 fn detune_plain(n: f64) -> f64 {
@@ -226,7 +243,11 @@ macro_rules! p {
 pub struct LanternSynthDsp {
     sample_rate: f32,
     voices: [Voice; NUM_VOICES],
-    lfo_phase: f32,
+    // Host transport (for LFO tempo sync).
+    tempo: f64,
+    ppq: f64,
+    playing: bool,
+    lfo_phases: [f64; LFOS],
     // One-pole smoothed continuous controls (zipper-noise control).
     sm: [f32; 12],
     snap: bool,
@@ -292,8 +313,104 @@ impl Dsp for LanternSynthDsp {
         subcategories: "Instrument|Synth",
     };
 
-    #[rustfmt::skip]
-    const PARAMS: &'static [ParamDef] = &[
+    const PARAMS: &'static [ParamDef] = &{
+        let mut all = [BASE_PARAMS[0]; 31 + LFOS * (LFO_STEPS + 1)];
+        let mut i = 0;
+        while i < 31 {
+            all[i] = BASE_PARAMS[i];
+            i += 1;
+        }
+        let mut l = 0;
+        while l < LFOS {
+            let b = 31 + l * (LFO_STEPS + 1);
+            all[b] = ParamDef {
+                id: b as u32,
+                title: LFO_RATE_TITLES[l],
+                short_title: LFO_RATE_TITLES[l],
+                units: "",
+                default_normalized: 2.0 / 7.0, // 1 Bar
+                step_count: 7,
+                can_automate: true,
+                to_plain: None,
+                from_plain: None,
+                format: Some(lfo_div_fmt),
+            };
+            let mut s = 0;
+            while s < LFO_STEPS {
+                all[b + 1 + s] = ParamDef {
+                    id: (b + 1 + s) as u32,
+                    title: LFO_STEP_TITLES[l][s],
+                    short_title: LFO_STEP_TITLES[l][s],
+                    units: "%",
+                    // LFO 1 defaults to the classic wub ramp; 2 and 3 flat.
+                    default_normalized: if l == 0 {
+                        1.0 - s as f64 / (LFO_STEPS - 1) as f64
+                    } else {
+                        0.5
+                    },
+                    step_count: 0,
+                    can_automate: true,
+                    to_plain: Some(pct_plain),
+                    from_plain: Some(pct_norm),
+                    format: Some(pct_fmt),
+                };
+                s += 1;
+            }
+            l += 1;
+        }
+        all
+    };
+
+    const METERS: usize = 12;
+    const EDITOR: Option<EditorFactory> = Some(face::make_editor);
+    const IS_INSTRUMENT: bool = true;
+
+    fn new() -> Self {
+        Self::new_impl()
+    }
+
+    fn setup(&mut self, sample_rate: f64, _max_block_size: usize) {
+        self.setup_impl(sample_rate);
+    }
+
+    fn reset(&mut self) {
+        self.reset_impl();
+    }
+
+    fn transport(&mut self, tempo: f64, ppq: f64, playing: bool) {
+        if tempo > 0.0 {
+            self.tempo = tempo;
+        }
+        self.ppq = ppq;
+        self.playing = playing;
+    }
+
+    fn process_with_events(
+        &mut self,
+        buffers: &mut [&mut [f32]],
+        events: &[NoteEvent],
+        params: &ParamValues,
+        meters: &MeterStore,
+    ) {
+        self.process_impl(buffers, events, params, meters);
+    }
+}
+
+#[rustfmt::skip]
+const LFO_RATE_TITLES: [&str; 3] = ["LFO1 Rate", "LFO2 Rate", "LFO3 Rate"];
+
+#[rustfmt::skip]
+const LFO_STEP_TITLES: [[&str; 16]; 3] = [
+    ["L1 S01","L1 S02","L1 S03","L1 S04","L1 S05","L1 S06","L1 S07","L1 S08",
+     "L1 S09","L1 S10","L1 S11","L1 S12","L1 S13","L1 S14","L1 S15","L1 S16"],
+    ["L2 S01","L2 S02","L2 S03","L2 S04","L2 S05","L2 S06","L2 S07","L2 S08",
+     "L2 S09","L2 S10","L2 S11","L2 S12","L2 S13","L2 S14","L2 S15","L2 S16"],
+    ["L3 S01","L3 S02","L3 S03","L3 S04","L3 S05","L3 S06","L3 S07","L3 S08",
+     "L3 S09","L3 S10","L3 S11","L3 S12","L3 S13","L3 S14","L3 S15","L3 S16"],
+];
+
+#[rustfmt::skip]
+const BASE_PARAMS: [ParamDef; 31] = [
         p!(0,  "O1 On",     "",   1.0,       1, None, None, Some(on_fmt)),
         p!(1,  "O1 Wave",   "",   2.0 / 7.0, 7, None, None, Some(osc_wave_fmt)),
         p!(2,  "O1 Volume", "%",  0.7,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
@@ -325,17 +442,17 @@ impl Dsp for LanternSynthDsp {
         p!(28, "Gain",      "dB", 0.9,       0, Some(gain_plain), Some(gain_norm), Some(gain_fmt)),
         p!(29, "Flt Type",  "",   0.0,       3, None, None, Some(flt_type_fmt)),
         p!(30, "Flt On",    "",   1.0,       1, None, None, Some(on_fmt)),
-    ];
+];
 
-    const METERS: usize = 9;
-    const EDITOR: Option<EditorFactory> = Some(face::make_editor);
-    const IS_INSTRUMENT: bool = true;
-
-    fn new() -> Self {
+impl LanternSynthDsp {
+    fn new_impl() -> Self {
         Self {
+            tempo: 120.0,
+            ppq: f64::NAN,
+            playing: false,
+            lfo_phases: [0.0; LFOS],
             sample_rate: 48_000.0,
             voices: std::array::from_fn(|_| Voice::new()),
-            lfo_phase: 0.0,
             sm: [0.0; 12],
             snap: true,
             coef: 0.0,
@@ -347,27 +464,27 @@ impl Dsp for LanternSynthDsp {
         }
     }
 
-    fn setup(&mut self, sample_rate: f64, _max_block_size: usize) {
+    fn setup_impl(&mut self, sample_rate: f64) {
         let sr = sample_rate as f32;
         self.sample_rate = sr;
         self.coef = 1.0 - (-1.0 / (sr * 0.010)).exp();
         self.env_decay = (0.1f32.ln() / (1.5 * sr)).exp();
         self.ms_coef = 1.0 - (-1.0 / (sr * 0.3)).exp();
-        self.reset();
+        self.reset_impl();
     }
 
-    fn reset(&mut self) {
+    fn reset_impl(&mut self) {
         for v in &mut self.voices {
             *v = Voice::new();
         }
-        self.lfo_phase = 0.0;
+        self.lfo_phases = [0.0; LFOS];
         self.snap = true;
         self.env_l = 0.0;
         self.ms_l = 0.0;
         self.ui_note_prev = 0;
     }
 
-    fn process_with_events(
+    fn process_impl(
         &mut self,
         buffers: &mut [&mut [f32]],
         events: &[NoteEvent],
@@ -435,8 +552,24 @@ impl Dsp for LanternSynthDsp {
             }
         }
 
+        // Step LFOs: tempo-synced, beat-locked to the song position while
+        // playing (so a 1-bar wobble lands ON the bar), free-running at the
+        // last known tempo otherwise.
+        let mut lfo_steps = [[0.0f32; LFO_STEPS]; LFOS];
+        let mut lfo_inc = [0.0f64; LFOS];
+        for l in 0..LFOS {
+            for (s, step) in lfo_steps[l].iter_mut().enumerate() {
+                *step = params.normalized(p_lfo_step(l, s)) as f32;
+            }
+            let div = ((params.normalized(p_lfo_rate(l)) * 7.0).round() as usize).min(7);
+            let beats = LFO_DIV_BEATS[div];
+            if self.playing && self.ppq.is_finite() {
+                self.lfo_phases[l] = (self.ppq / beats).rem_euclid(1.0);
+            }
+            lfo_inc[l] = self.tempo / 60.0 / beats / self.sample_rate as f64;
+        }
+
         // Per-block discrete values.
-        let lfo_wave = Waveform::from_index((params.normalized(P_LFO_WAVE) * 3.0).round() as usize);
         let flt_on = params.normalized(P_FLT_ON) >= 0.5;
         let flt_mode =
             FilterMode::from_index((params.normalized(P_FLT_TYPE) * 3.0).round() as usize);
@@ -498,9 +631,18 @@ impl Dsp for LanternSynthDsp {
                 sr,
             };
 
-            // Global LFO (shared across voices) — the wobble.
-            let lfo_value = naive_wave(lfo_wave, self.lfo_phase);
-            self.lfo_phase = (self.lfo_phase + self.sm[S_LFO_RATE] / sr).fract();
+            // LFO 1 drives the wobble (shared across voices); all three
+            // advance so their playheads stay honest.
+            let lfo_value = {
+                let ph = self.lfo_phases[0] as f32 * LFO_STEPS as f32;
+                let i0 = (ph as usize) % LFO_STEPS;
+                let i1 = (i0 + 1) % LFO_STEPS;
+                let v = lfo_steps[0][i0] + (lfo_steps[0][i1] - lfo_steps[0][i0]) * ph.fract();
+                v * 2.0 - 1.0
+            };
+            for l in 0..LFOS {
+                self.lfo_phases[l] = (self.lfo_phases[l] + lfo_inc[l]).fract();
+            }
 
             let mut sum = 0.0;
             for v in self.voices.iter_mut() {
@@ -535,15 +677,18 @@ impl Dsp for LanternSynthDsp {
         let mut key_mask = 0u64;
         for v in self.voices.iter().filter(|v| v.active) {
             let mut n = v.note as i32;
-            while n < 24 {
+            while n < 48 {
                 n += 12;
             }
-            while n > 60 {
+            while n > 72 {
                 n -= 12;
             }
-            key_mask |= 1 << (n - 24);
+            key_mask |= 1 << (n - 48);
         }
         meters.set(M_KEYS, key_mask as f64);
+        for l in 0..LFOS {
+            meters.set(M_LFO_PHASE + l, self.lfo_phases[l]);
+        }
     }
 }
 

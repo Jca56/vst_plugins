@@ -13,17 +13,19 @@ use lantern_vst3::plugin::{Editor, ParamsHandle};
 
 use crate::synth::{osc, svf_k, FilterMode, Waveform};
 use crate::{
-    p_osc, M_KEYS, M_LEVEL_L, M_LEVEL_R, M_PEAK_L, M_PEAK_R, M_RMS_L, M_RMS_R, M_UI_NOTE,
-    OSC_DETUNE, OSC_ENABLE, OSC_PITCH, OSC_VOICES, OSC_VOLUME, OSC_WAVE, P_CUTOFF, P_FENV_AMT,
-    P_FLT_ON, P_FLT_TYPE, P_RES,
+    p_lfo_rate, p_lfo_step, p_osc, LFOS, LFO_STEPS, M_KEYS, M_LEVEL_L, M_LEVEL_R, M_LFO_PHASE,
+    M_PEAK_L, M_PEAK_R, M_RMS_L, M_RMS_R, M_UI_NOTE, OSC_DETUNE, OSC_ENABLE, OSC_PITCH,
+    OSC_VOICES, OSC_VOLUME, OSC_WAVE, P_CUTOFF, P_FENV_AMT, P_FLT_ON, P_FLT_TYPE, P_LFO_DEPTH,
+    P_RES,
 };
 
 const WIN_W: u32 = 1776;
-const WIN_H: u32 = 884;
+const WIN_H: u32 = 1176;
 
-/// Keyboard range: C0 to C3 in Live's naming (Alva's home row on top).
-const KB_LOW: u8 = 24;
-const WHITE_KEYS: usize = 22; // 3 octaves + the top C
+/// Keyboard range: C2 to C4 in Live's naming — C3, Alva's home row, dead
+/// center.
+const KB_LOW: u8 = 48;
+const WHITE_KEYS: usize = 15; // 2 octaves + the top C
 
 /// The fire experiment: Alva's background image, embedded raw (888x442
 /// RGBA), drawn under a translucent panel. If the verdict is "stupid",
@@ -35,7 +37,7 @@ pub fn background() -> BackgroundImage {
         rgba: BG_RGBA.to_vec(),
         width: 888,
         height: 442,
-        alpha: 0.38,
+        alpha: 0.58,
     }
 }
 
@@ -61,6 +63,10 @@ pub fn preview_face() -> impl FnMut(&mut Ui) {
 struct Face {
     /// Key currently held by the mouse (MIDI note).
     held: Option<u8>,
+    /// Which LFO tab is showing.
+    active_lfo: usize,
+    /// Mid-drag in the LFO drawing grid.
+    painting: bool,
 }
 
 /// Sub-panel fill: one step lighter than the face panel.
@@ -183,15 +189,148 @@ impl Face {
         self.osc_panel(ui, Rect::new(574.0, 44.0, 500.0, 420.0), 1);
         filter_panel(ui, Rect::new(1104.0, 44.0, 500.0, 420.0));
 
-        // Output meter ends above the keyboard.
+        // The fire hairline, back where it belongs.
+        ui.divider(44.0, 480.0, 1560.0);
+
+        // The WOBBLE room, below the line on the right.
+        self.lfo_panel(ui, Rect::new(1104.0, 496.0, 500.0, 470.0));
+
+        // Output meter runs from the top to the WOBBLE room's baseline.
         ui.level_meter(
-            Rect::new(1652.0, 44.0, 80.0, 630.0),
+            Rect::new(1652.0, 44.0, 80.0, 922.0),
             (M_LEVEL_L, M_LEVEL_R),
             (M_PEAK_L, M_PEAK_R),
             (M_RMS_L, M_RMS_R),
         );
 
-        self.keyboard(ui, Rect::new(44.0, 690.0, 1688.0, 150.0));
+        self.keyboard(ui, Rect::new(44.0, 982.0, 1688.0, 150.0));
+    }
+
+    /// Three drawable step LFOs: tabs, the drawing grid (drag to paint),
+    /// tempo-synced RATE, and — for LFO 1 — the DEPTH of the classic
+    /// cutoff wobble. LFO 2/3 wait on the mod matrix for routing.
+    fn lfo_panel(&mut self, ui: &mut Ui, r: Rect) {
+        let t = ui.theme;
+        sub_panel(ui, r);
+
+        let (mx, my) = ui.mouse_pos();
+        for l in 0..LFOS {
+            let tab = Rect::new(r.x + 12.0 + l as f32 * 96.0, r.y + 14.0, 90.0, 40.0);
+            let selected = l == self.active_lfo;
+            if ui.mouse_clicked() && tab.contains(mx, my) {
+                self.active_lfo = l;
+            }
+            ui.painter.rect_filled(
+                tab,
+                6.0,
+                if selected { t.accent.with_alpha(0.25) } else { t.well_deep },
+            );
+            ui.painter.rect_border(
+                tab,
+                6.0,
+                2.5,
+                if selected { t.accent } else { t.panel_border },
+            );
+            ui.label_centered(
+                &format!("LFO {}", l + 1),
+                tab.center_x(),
+                tab.y + 8.0,
+                21.0,
+                if selected { t.text } else { t.text_dim },
+            );
+        }
+
+        let l = self.active_lfo;
+        self.lfo_grid(ui, Rect::new(r.x + 16.0, r.y + 66.0, r.w - 32.0, 200.0), l);
+
+        ui.knob_cell(p_lfo_rate(l), Rect::new(r.x + 16.0, r.y + 276.0, 150.0, 186.0), "RATE");
+        if l == 0 {
+            ui.knob_cell(P_LFO_DEPTH, Rect::new(r.x + 172.0, r.y + 276.0, 150.0, 186.0), "DEPTH");
+            ui.label("→ CUTOFF", r.x + 340.0, r.y + 352.0, 21.0, t.text_dim);
+        } else {
+            ui.label(
+                "routing arrives with",
+                r.x + 200.0,
+                r.y + 336.0,
+                21.0,
+                t.text_dim.with_alpha(0.6),
+            );
+            ui.label(
+                "the mod matrix",
+                r.x + 200.0,
+                r.y + 366.0,
+                21.0,
+                t.text_dim.with_alpha(0.6),
+            );
+        }
+    }
+
+    /// The drawing grid: 16 steps, drag across to paint the shape. The
+    /// playhead sweeps at the synced rate — what you draw is what wobbles.
+    fn lfo_grid(&mut self, ui: &mut Ui, grid: Rect, l: usize) {
+        let t = ui.theme;
+        ui.painter.rect_filled(grid, 8.0, t.well_deep);
+
+        // Paint: click or drag sets the step under the cursor to the
+        // cursor's height.
+        let (mx, my) = ui.mouse_pos();
+        if ui.mouse_clicked() && grid.contains(mx, my) {
+            self.painting = true;
+        }
+        if !ui.mouse_is_down() {
+            self.painting = false;
+        }
+        if self.painting {
+            let cell = grid.w / LFO_STEPS as f32;
+            let s = ((((mx - grid.x) / cell) as isize).max(0) as usize).min(LFO_STEPS - 1);
+            let v = (1.0 - (my - grid.y) / grid.h).clamp(0.0, 1.0) as f64;
+            let p = p_lfo_step(l, s);
+            if (ui.params.normalized(p) - v).abs() > 0.004 {
+                ui.params.begin_edit(p);
+                ui.params.perform_edit(p, v);
+                ui.params.end_edit(p);
+            }
+        }
+
+        // Beat grid: quarter marks brighter, mid line faint.
+        for q in 1..4 {
+            let x = grid.x + grid.w * q as f32 / 4.0;
+            ui.painter.line(x, grid.y + 2.0, x, grid.y + grid.h - 2.0, 1.0, t.track);
+        }
+        ui.painter.line(
+            grid.x + 4.0,
+            grid.center_y(),
+            grid.x + grid.w - 4.0,
+            grid.center_y(),
+            1.0,
+            t.track.with_alpha(0.6),
+        );
+
+        let cell = grid.w / LFO_STEPS as f32;
+        for s in 0..LFO_STEPS {
+            let v = ui.params.normalized(p_lfo_step(l, s)) as f32;
+            let h = grid.h * v;
+            let x = grid.x + s as f32 * cell;
+            if h > 1.0 {
+                ui.painter.rect_filled(
+                    Rect::new(x + 1.5, grid.y + grid.h - h, cell - 3.0, h),
+                    2.0,
+                    t.accent.with_alpha(0.45),
+                );
+            }
+            ui.painter.rect_filled(
+                Rect::new(x + 1.5, (grid.y + grid.h - h - 2.0).max(grid.y), cell - 3.0, 3.5),
+                1.0,
+                t.accent,
+            );
+        }
+
+        // Playhead, live from the DSP.
+        let phase = ui.params.meter(M_LFO_PHASE + l) as f32;
+        let px = grid.x + phase.clamp(0.0, 1.0) * grid.w;
+        ui.painter.line(px, grid.y + 2.0, px, grid.y + grid.h - 2.0, 2.5, t.warm);
+
+        ui.painter.rect_border(grid, 8.0, 2.5, t.panel_border);
     }
 
     /// One oscillator room, wide format: power square + wave dropdown on
@@ -245,7 +384,7 @@ impl Face {
         // --- Interaction: press, glissando, release ---
         let (mx, my) = ui.mouse_pos();
         let mut over: Option<u8> = None;
-        'blacks: for oct in 0..3 {
+        'blacks: for oct in 0..2 {
             for &(pc, boundary) in &BLACKS {
                 if black_rect(black_x(oct, boundary)).contains(mx, my) {
                     over = Some(KB_LOW + oct as u8 * 12 + pc);
@@ -288,7 +427,7 @@ impl Face {
             }
             if i % 7 == 0 {
                 ui.label(
-                    &format!("C{}", i / 7),
+                    &format!("C{}", i / 7 + 2),
                     r.x + 7.0,
                     r.y + r.h - 28.0,
                     17.0,
@@ -296,7 +435,7 @@ impl Face {
                 );
             }
         }
-        for oct in 0..3 {
+        for oct in 0..2 {
             for &(pc, boundary) in &BLACKS {
                 let r = black_rect(black_x(oct, boundary));
                 ui.painter.rect_filled(r, 4.0, Color::from_rgb8(20, 20, 20));

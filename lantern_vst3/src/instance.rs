@@ -449,6 +449,22 @@ impl<D: Dsp> PluginInstance<D> {
             return kResultOk;
         }
 
+        // Hand the DSP the host transport, when provided.
+        if !data.context.is_null() {
+            let ctx = &*(data.context as *const ProcessContext);
+            let tempo = if ctx.state & K_TEMPO_VALID != 0 {
+                ctx.tempo
+            } else {
+                0.0
+            };
+            let ppq = if ctx.state & K_PROJECT_TIME_MUSIC_VALID != 0 {
+                ctx.project_time_music
+            } else {
+                f64::NAN
+            };
+            (*me.dsp.get()).transport(tempo, ppq, ctx.state & K_PLAYING != 0);
+        }
+
         // Collect this block's note events (instruments only), sorted by
         // sample offset. Fixed-capacity: keep the audio thread heap-free.
         let mut events = [NoteEvent {

@@ -401,6 +401,38 @@ pub struct IParamValueQueueVtbl {
 }
 
 // ---------------------------------------------------------------------------
+// ProcessContext: the host's transport, handed along in ProcessData.
+// Layout cross-checked against the vst3-sys reference.
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+pub struct ProcessContext {
+    pub state: u32,
+    pub sample_rate: f64,
+    pub project_time_samples: i64,
+    pub system_time: i64,
+    pub continuous_time_samples: i64,
+    /// Song position in quarter notes.
+    pub project_time_music: f64,
+    pub bar_position_music: f64,
+    pub cycle_start_music: f64,
+    pub cycle_end_music: f64,
+    pub tempo: f64,
+    pub time_sig_num: i32,
+    pub time_sig_den: i32,
+    /// Chord { key_note u8, root_note u8, chord_mask i16 } — opaque here.
+    pub chord: [u8; 4],
+    pub smpte_offset_subframes: i32,
+    /// FrameRate { fps u32, flags u32 } — opaque here.
+    pub frame_rate: [u32; 2],
+    pub samples_to_next_clock: i64,
+}
+
+pub const K_PLAYING: u32 = 1 << 1;
+pub const K_PROJECT_TIME_MUSIC_VALID: u32 = 1 << 9;
+pub const K_TEMPO_VALID: u32 = 1 << 10;
+
+// ---------------------------------------------------------------------------
 // IEventList: note events the host hands an instrument each process block.
 // Layout cross-checked against the vst3-sys reference (ivstevents.rs):
 // the union carries pointer-bearing members, so it is 8-aligned and the

@@ -115,11 +115,14 @@ fn main() {
         meters.set(s::M_VOICES, 3.0);
         // Light a C1 power chord across the keyboard: C1, G1, C2.
         meters.set(s::M_KEYS, ((1u64 << 12) | (1 << 19) | (1 << 24)) as f64);
+        meters.set(s::M_LFO_PHASE, 0.34);
+        meters.set(s::M_LFO_PHASE + 1, 0.62);
+        meters.set(s::M_LFO_PHASE + 2, 0.08);
         let path = format!("{out}/synth.png");
         let bg = s::background();
         preview::render_png_with_background(
             1776,
-            884,
+            1176,
             &theme,
             Some(&bg),
             params,

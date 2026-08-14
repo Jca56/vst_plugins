@@ -383,6 +383,11 @@ pub trait Dsp: Send + 'static {
     fn process(&mut self, _buffers: &mut [&mut [f32]], _params: &ParamValues, _meters: &MeterStore) {
     }
 
+    /// Host transport at block start (defaults: ignore). `tempo` is BPM or
+    /// 0.0 when the host didn't say; `ppq` is the song position in quarter
+    /// notes or NaN. Called before `process`/`process_with_events`.
+    fn transport(&mut self, _tempo: f64, _ppq: f64, _playing: bool) {}
+
     /// Instrument entry point: `process`, plus this block's note events
     /// sorted by sample offset. The default forwards to `process`, so
     /// effects never see it.
