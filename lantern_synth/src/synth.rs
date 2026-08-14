@@ -24,13 +24,24 @@ impl Waveform {
     }
 }
 
+/// Maximum unison voices per oscillator.
+pub const MAX_UNISON: usize = 7;
+
+/// One oscillator's per-block settings. `ratios` carries the frequency
+/// ratio of each unison copy with pitch and detune spread baked in, so the
+/// per-sample path never touches powf.
+#[derive(Clone, Copy)]
+pub struct OscSettings {
+    pub enabled: bool,
+    pub wave: Waveform,
+    pub volume: f32,
+    pub voices: usize,
+    pub ratios: [f32; MAX_UNISON],
+}
+
 /// Per-sample scalar snapshot of everything a voice needs.
 pub struct VoiceParams {
-    pub osc1_wave: Waveform,
-    pub osc2_wave: Waveform,
-    pub osc_mix: f32,
-    pub osc2_detune: f32,
-    pub osc2_octave: i32,
+    pub osc: [OscSettings; 2],
     pub fm_amount: f32,
     pub cutoff: f32,
     pub resonance: f32,
@@ -51,8 +62,7 @@ pub struct Voice {
     pub active: bool,
     pub note: u8,
     pub velocity: f32,
-    phase1: f32,
-    phase2: f32,
+    phases: [[f32; MAX_UNISON]; 2],
     pub amp_env: Adsr,
     pub flt_env: Adsr,
     filter: Svf,
@@ -64,8 +74,7 @@ impl Voice {
             active: false,
             note: 0,
             velocity: 0.0,
-            phase1: 0.0,
-            phase2: 0.0,
+            phases: [[0.0; MAX_UNISON]; 2],
             amp_env: Adsr::new(),
             flt_env: Adsr::new(),
             filter: Svf::new(),
@@ -76,8 +85,15 @@ impl Voice {
         self.active = true;
         self.note = note;
         self.velocity = velocity;
-        self.phase1 = 0.0;
-        self.phase2 = 0.0;
+        // Scatter unison phases deterministically (same note = same attack).
+        for o in 0..2 {
+            for k in 0..MAX_UNISON {
+                let h = (note as u32)
+                    .wrapping_mul(2_654_435_761)
+                    .wrapping_add(((o * MAX_UNISON + k) as u32).wrapping_mul(40_503));
+                self.phases[o][k] = (h >> 8) as f32 / 16_777_216.0;
+            }
+        }
         self.filter.reset();
         self.amp_env.trigger();
         self.flt_env.trigger();
@@ -86,6 +102,23 @@ impl Voice {
     pub fn note_off(&mut self) {
         self.amp_env.release();
         self.flt_env.release();
+    }
+
+    /// One oscillator: sum of its unison copies (equal-power normalized),
+    /// all phase-modulated together by `pm`.
+    fn run_osc(&mut self, oi: usize, set: &OscSettings, base: f32, sr: f32, pm: f32) -> f32 {
+        if !set.enabled {
+            return 0.0;
+        }
+        let n = set.voices.clamp(1, MAX_UNISON);
+        let mut sum = 0.0;
+        for k in 0..n {
+            let dt = (base * set.ratios[k] / sr).min(0.49);
+            let ph = (self.phases[oi][k] + pm).rem_euclid(1.0);
+            sum += osc(set.wave, ph, dt);
+            self.phases[oi][k] = (self.phases[oi][k] + dt).fract();
+        }
+        sum / (n as f32).sqrt()
     }
 
     pub fn render(&mut self, p: &VoiceParams, lfo_value: f32) -> f32 {
@@ -102,19 +135,10 @@ impl Voice {
         }
 
         let base = midi_to_freq(self.note);
-        let f1 = base;
-        let f2 = base * 2.0f32.powi(p.osc2_octave) * 2.0f32.powf(p.osc2_detune / 1200.0);
-        let dt1 = (f1 / p.sr).min(0.49);
-        let dt2 = (f2 / p.sr).min(0.49);
-
-        // Osc 2 phase-modulates Osc 1 (this is the "FM").
-        let s2 = osc(p.osc2_wave, self.phase2, dt2);
-        let pm = (self.phase1 + s2 * p.fm_amount).rem_euclid(1.0);
-        let s1 = osc(p.osc1_wave, pm, dt1);
-        let mixed = s1 * (1.0 - p.osc_mix) + s2 * p.osc_mix;
-
-        self.phase1 = (self.phase1 + dt1).fract();
-        self.phase2 = (self.phase2 + dt2).fract();
+        // Osc 2 first: it phase-modulates Osc 1 (the "FM").
+        let s2 = self.run_osc(1, &p.osc[1], base, p.sr, 0.0);
+        let s1 = self.run_osc(0, &p.osc[0], base, p.sr, s2 * p.fm_amount);
+        let mixed = s1 * p.osc[0].volume + s2 * p.osc[1].volume;
 
         // Cutoff modulated in octaves (musical) by filter env + global LFO.
         let mod_oct = p.filt_env_oct * fenv + p.lfo_oct * lfo_value;

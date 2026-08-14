@@ -426,6 +426,64 @@ impl Ui<'_> {
         self.edit_chrome(id, param, rect, engaged, Some(fill));
     }
 
+    /// Number box adjusted by VERTICAL drag (up = more) — for counts and
+    /// steppers. Wheel moves one step on stepped params; a motionless click
+    /// opens typed entry, like the value box.
+    pub fn stepper_box(&mut self, param: usize, rect: Rect) {
+        let id = 0x4000 + param as u32;
+        let (mx, my) = self.input.mouse;
+        let hovered = rect.contains(mx, my);
+        let editing_this = matches!(&self.mem.edit, Some(e) if e.id == id);
+
+        if self.input.pressed {
+            if !hovered && editing_this {
+                commit_edit(self.mem, self.params);
+            }
+            if hovered && !editing_this && self.mem.active.is_none() {
+                self.mem.active = Some(id);
+                self.mem.drag_anchor_y = my;
+                self.mem.drag_anchor_value = self.params.normalized(param);
+                self.mem.drag_fine = self.input.shift;
+                self.mem.drag_moved = false;
+                self.params.begin_edit(param);
+            }
+        }
+        if self.mem.active == Some(id) {
+            if self.input.shift != self.mem.drag_fine {
+                self.mem.drag_fine = self.input.shift;
+                self.mem.drag_anchor_y = my;
+                self.mem.drag_anchor_value = self.params.normalized(param);
+            }
+            let range = if self.mem.drag_fine { 1500.0 } else { 150.0 };
+            let dy = (self.mem.drag_anchor_y - my) as f64;
+            if dy.abs() > 3.0 {
+                self.mem.drag_moved = true;
+            }
+            if self.mem.drag_moved {
+                self.params
+                    .perform_edit(param, self.mem.drag_anchor_value + dy / range);
+            }
+            if self.input.released {
+                self.params.end_edit(param);
+                self.mem.active = None;
+                if !self.mem.drag_moved {
+                    self.open_edit(id, param);
+                }
+            }
+        } else if hovered && self.input.wheel != 0.0 {
+            let steps = self.params.def(param).step_count;
+            let step = if steps > 0 { 1.0 / steps as f64 } else { 0.02 };
+            let value = self.params.normalized(param) + step * self.input.wheel as f64;
+            self.params.begin_edit(param);
+            self.params.perform_edit(param, value);
+            self.params.end_edit(param);
+        }
+
+        self.edit_keys(id);
+        let engaged = hovered || self.mem.active == Some(id);
+        self.edit_chrome(id, param, rect, engaged, None);
+    }
+
     /// Momentary action button; true on the frame it's clicked.
     /// Disabled buttons render dim and ignore the mouse.
     pub fn button(&mut self, rect: Rect, label: &str, enabled: bool) -> bool {

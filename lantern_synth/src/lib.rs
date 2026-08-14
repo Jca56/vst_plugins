@@ -14,35 +14,41 @@ mod synth;
 use lantern_vst3::plugin::{
     Dsp, EditorFactory, MeterStore, NoteEvent, NoteKind, ParamDef, ParamValues, PluginInfo,
 };
-use synth::{naive_wave, EnvStage, Voice, VoiceParams, Waveform};
+use synth::{naive_wave, EnvStage, OscSettings, Voice, VoiceParams, Waveform, MAX_UNISON};
 
 pub use face::preview_face;
 
 const NUM_VOICES: usize = 16;
 
-// Parameter indices (== ids, forever).
-pub const P_O1_WAVE: usize = 0;
-pub const P_O2_WAVE: usize = 1;
-pub const P_OSC_MIX: usize = 2;
-pub const P_O2_DETUNE: usize = 3;
-pub const P_O2_OCTAVE: usize = 4;
-pub const P_FM: usize = 5;
-pub const P_CUTOFF: usize = 6;
-pub const P_RES: usize = 7;
-pub const P_FENV_AMT: usize = 8;
-pub const P_LFO_RATE: usize = 9;
-pub const P_LFO_DEPTH: usize = 10;
-pub const P_LFO_WAVE: usize = 11;
-pub const P_AMP_A: usize = 12;
-pub const P_AMP_D: usize = 13;
-pub const P_AMP_S: usize = 14;
-pub const P_AMP_R: usize = 15;
-pub const P_FLT_A: usize = 16;
-pub const P_FLT_D: usize = 17;
-pub const P_FLT_S: usize = 18;
-pub const P_FLT_R: usize = 19;
-pub const P_DRIVE: usize = 20;
-pub const P_GAIN: usize = 21;
+// Parameter indices (== ids; renumbered once while Blacklight was young and
+// no projects existed — from here on they are forever).
+// Per-oscillator block: o in {0, 1}, six params each.
+pub const OSC_ENABLE: usize = 0;
+pub const OSC_WAVE: usize = 1;
+pub const OSC_VOLUME: usize = 2;
+pub const OSC_PITCH: usize = 3;
+pub const OSC_VOICES: usize = 4;
+pub const OSC_DETUNE: usize = 5;
+pub fn p_osc(o: usize, which: usize) -> usize {
+    o * 6 + which
+}
+pub const P_FM: usize = 12;
+pub const P_CUTOFF: usize = 13;
+pub const P_RES: usize = 14;
+pub const P_FENV_AMT: usize = 15;
+pub const P_LFO_RATE: usize = 16;
+pub const P_LFO_DEPTH: usize = 17;
+pub const P_LFO_WAVE: usize = 18;
+pub const P_AMP_A: usize = 19;
+pub const P_AMP_D: usize = 20;
+pub const P_AMP_S: usize = 21;
+pub const P_AMP_R: usize = 22;
+pub const P_FLT_A: usize = 23;
+pub const P_FLT_D: usize = 24;
+pub const P_FLT_S: usize = 25;
+pub const P_FLT_R: usize = 26;
+pub const P_DRIVE: usize = 27;
+pub const P_GAIN: usize = 28;
 
 /// Meter slots (pub so the preview harness can stage demo values).
 pub const M_LEVEL_L: usize = 0;
@@ -79,23 +85,42 @@ fn wave_fmt(n: f64) -> String {
 }
 
 fn detune_plain(n: f64) -> f64 {
-    n * 200.0 - 100.0
+    n * 100.0 // unison spread, 0..100 cents
 }
 fn detune_norm(p: f64) -> f64 {
-    (p + 100.0) / 200.0
+    p / 100.0
 }
 fn detune_fmt(n: f64) -> String {
-    format!("{:+.0}", detune_plain(n))
+    format!("{:.0}", detune_plain(n))
 }
 
-fn oct_plain(n: f64) -> f64 {
-    (n * 4.0).round() - 2.0
+fn pitch_plain(n: f64) -> f64 {
+    (n * 48.0).round() - 24.0 // stepped semitones, +/- 2 octaves
 }
-fn oct_norm(p: f64) -> f64 {
-    (p + 2.0) / 4.0
+fn pitch_norm(p: f64) -> f64 {
+    (p + 24.0) / 48.0
 }
-fn oct_fmt(n: f64) -> String {
-    format!("{:+.0}", oct_plain(n))
+fn pitch_fmt(n: f64) -> String {
+    let p = pitch_plain(n);
+    if p == 0.0 {
+        "0".to_string()
+    } else {
+        format!("{p:+.0}")
+    }
+}
+
+fn voices_plain(n: f64) -> f64 {
+    (n * 6.0).round() + 1.0 // 1..7 unison voices
+}
+fn voices_norm(p: f64) -> f64 {
+    (p - 1.0) / 6.0
+}
+fn voices_fmt(n: f64) -> String {
+    format!("{:.0}", voices_plain(n))
+}
+
+fn on_fmt(n: f64) -> String {
+    if n >= 0.5 { "On" } else { "Off" }.to_string()
 }
 
 fn cutoff_plain(n: f64) -> f64 {
@@ -189,7 +214,7 @@ pub struct LanternSynthDsp {
     voices: [Voice; NUM_VOICES],
     lfo_phase: f32,
     // One-pole smoothed continuous controls (zipper-noise control).
-    sm: [f32; 10],
+    sm: [f32; 12],
     snap: bool,
     coef: f32,
     // Output metering (family standard).
@@ -202,16 +227,18 @@ pub struct LanternSynthDsp {
 }
 
 /// Indices into the smoother array.
-const S_MIX: usize = 0;
-const S_DETUNE: usize = 1;
-const S_FM: usize = 2;
-const S_CUTOFF: usize = 3;
-const S_RES: usize = 4;
-const S_FENV: usize = 5;
-const S_LFO_RATE: usize = 6;
-const S_LFO_DEPTH: usize = 7;
-const S_DRIVE: usize = 8;
-const S_GAIN: usize = 9;
+const S_VOL0: usize = 0;
+const S_VOL1: usize = 1;
+const S_DET0: usize = 2;
+const S_DET1: usize = 3;
+const S_FM: usize = 4;
+const S_CUTOFF: usize = 5;
+const S_RES: usize = 6;
+const S_FENV: usize = 7;
+const S_LFO_RATE: usize = 8;
+const S_LFO_DEPTH: usize = 9;
+const S_DRIVE: usize = 10;
+const S_GAIN: usize = 11;
 
 impl LanternSynthDsp {
     fn note_on(&mut self, note: u8, velocity: f32) {
@@ -253,28 +280,35 @@ impl Dsp for LanternSynthDsp {
 
     #[rustfmt::skip]
     const PARAMS: &'static [ParamDef] = &[
-        p!(0,  "Osc1 Wave",  "",    2.0 / 3.0, 3, None, None, Some(wave_fmt)),
-        p!(1,  "Osc2 Wave",  "",    2.0 / 3.0, 3, None, None, Some(wave_fmt)),
-        p!(2,  "Osc Mix",    "%",   0.5,    0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(3,  "Osc2 Detune","ct",  0.56,   0, Some(detune_plain), Some(detune_norm), Some(detune_fmt)),
-        p!(4,  "Osc2 Octave","oct", 0.5,    4, Some(oct_plain), Some(oct_norm), Some(oct_fmt)),
-        p!(5,  "FM Amount",  "%",   0.0,    0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(6,  "Cutoff",     "Hz",  0.5340, 0, Some(cutoff_plain), Some(cutoff_norm), Some(cutoff_fmt)),
-        p!(7,  "Resonance",  "%",   0.3,    0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(8,  "Filter Env", "oct", 0.375,  0, Some(moct_plain), Some(moct_norm), Some(moct_fmt)),
-        p!(9,  "LFO Rate",   "Hz",  0.6972, 0, Some(rate_plain), Some(rate_norm), Some(rate_fmt)),
-        p!(10, "LFO Depth",  "oct", 0.0,    0, Some(moct_plain), Some(moct_norm), Some(moct_fmt)),
-        p!(11, "LFO Wave",   "",    0.0,    3, None, None, Some(wave_fmt)),
-        p!(12, "Amp Attack", "",    0.1889, 0, Some(time_plain), Some(time_norm), Some(time_fmt)),
-        p!(13, "Amp Decay",  "",    0.6696, 0, Some(time_plain), Some(time_norm), Some(time_fmt)),
-        p!(14, "Amp Sustain","%",   0.9,    0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(15, "Amp Release","",    0.5883, 0, Some(time_plain), Some(time_norm), Some(time_fmt)),
-        p!(16, "Flt Attack", "",    0.0814, 0, Some(time_plain), Some(time_norm), Some(time_fmt)),
-        p!(17, "Flt Decay",  "",    0.6482, 0, Some(time_plain), Some(time_norm), Some(time_fmt)),
-        p!(18, "Flt Sustain","%",   0.2,    0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(19, "Flt Release","",    0.6220, 0, Some(time_plain), Some(time_norm), Some(time_fmt)),
-        p!(20, "Drive",      "%",   0.1,    0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
-        p!(21, "Gain",       "dB",  0.9,    0, Some(gain_plain), Some(gain_norm), Some(gain_fmt)),
+        p!(0,  "O1 On",     "",   1.0,       1, None, None, Some(on_fmt)),
+        p!(1,  "O1 Wave",   "",   2.0 / 3.0, 3, None, None, Some(wave_fmt)),
+        p!(2,  "O1 Volume", "%",  0.7,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
+        p!(3,  "O1 Pitch",  "st", 0.5,      48, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
+        p!(4,  "O1 Voices", "",   0.0,       6, Some(voices_plain), Some(voices_norm), Some(voices_fmt)),
+        p!(5,  "O1 Detune", "ct", 0.10,      0, Some(detune_plain), Some(detune_norm), Some(detune_fmt)),
+        p!(6,  "O2 On",     "",   1.0,       1, None, None, Some(on_fmt)),
+        p!(7,  "O2 Wave",   "",   2.0 / 3.0, 3, None, None, Some(wave_fmt)),
+        p!(8,  "O2 Volume", "%",  0.7,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
+        p!(9,  "O2 Pitch",  "st", 0.5,      48, Some(pitch_plain), Some(pitch_norm), Some(pitch_fmt)),
+        p!(10, "O2 Voices", "",   1.0 / 6.0, 6, Some(voices_plain), Some(voices_norm), Some(voices_fmt)),
+        p!(11, "O2 Detune", "ct", 0.12,      0, Some(detune_plain), Some(detune_norm), Some(detune_fmt)),
+        p!(12, "FM Amount", "%",  0.0,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
+        p!(13, "Cutoff",    "Hz", 0.5340,    0, Some(cutoff_plain), Some(cutoff_norm), Some(cutoff_fmt)),
+        p!(14, "Resonance", "%",  0.3,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
+        p!(15, "Filter Env","oct",0.375,     0, Some(moct_plain), Some(moct_norm), Some(moct_fmt)),
+        p!(16, "LFO Rate",  "Hz", 0.6972,    0, Some(rate_plain), Some(rate_norm), Some(rate_fmt)),
+        p!(17, "LFO Depth", "oct",0.0,       0, Some(moct_plain), Some(moct_norm), Some(moct_fmt)),
+        p!(18, "LFO Wave",  "",   0.0,       3, None, None, Some(wave_fmt)),
+        p!(19, "Amp Attack","",   0.1889,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
+        p!(20, "Amp Decay", "",   0.6696,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
+        p!(21, "Amp Sustain","%", 0.9,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
+        p!(22, "Amp Release","",  0.5883,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
+        p!(23, "Flt Attack","",   0.0814,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
+        p!(24, "Flt Decay", "",   0.6482,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
+        p!(25, "Flt Sustain","%", 0.2,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
+        p!(26, "Flt Release","",  0.6220,    0, Some(time_plain), Some(time_norm), Some(time_fmt)),
+        p!(27, "Drive",     "%",  0.1,       0, Some(pct_plain), Some(pct_norm), Some(pct_fmt)),
+        p!(28, "Gain",      "dB", 0.9,       0, Some(gain_plain), Some(gain_norm), Some(gain_fmt)),
     ];
 
     const METERS: usize = 9;
@@ -286,7 +320,7 @@ impl Dsp for LanternSynthDsp {
             sample_rate: 48_000.0,
             voices: std::array::from_fn(|_| Voice::new()),
             lfo_phase: 0.0,
-            sm: [0.0; 10],
+            sm: [0.0; 12],
             snap: true,
             coef: 0.0,
             env_l: 0.0,
@@ -340,8 +374,10 @@ impl Dsp for LanternSynthDsp {
 
         // Per-block targets for the smoothed continuous controls.
         let targets = [
-            params.plain(P_OSC_MIX) as f32 / 100.0,
-            params.plain(P_O2_DETUNE) as f32,
+            params.plain(p_osc(0, OSC_VOLUME)) as f32 / 100.0,
+            params.plain(p_osc(1, OSC_VOLUME)) as f32 / 100.0,
+            params.plain(p_osc(0, OSC_DETUNE)) as f32,
+            params.plain(p_osc(1, OSC_DETUNE)) as f32,
             params.plain(P_FM) as f32 / 100.0,
             params.plain(P_CUTOFF) as f32,
             params.plain(P_RES) as f32 / 100.0,
@@ -356,11 +392,35 @@ impl Dsp for LanternSynthDsp {
             self.snap = false;
         }
 
+        // Per-block oscillator settings: pitch + unison detune spread baked
+        // into per-copy frequency ratios (powf lives here, not per sample).
+        let mut osc_settings = [OscSettings {
+            enabled: false,
+            wave: Waveform::Saw,
+            volume: 0.0,
+            voices: 1,
+            ratios: [1.0; MAX_UNISON],
+        }; 2];
+        for (o, set) in osc_settings.iter_mut().enumerate() {
+            set.enabled = params.normalized(p_osc(o, OSC_ENABLE)) >= 0.5;
+            set.wave = Waveform::from_index(
+                (params.normalized(p_osc(o, OSC_WAVE)) * 3.0).round() as usize,
+            );
+            set.voices = (params.plain(p_osc(o, OSC_VOICES)) as usize).clamp(1, MAX_UNISON);
+            let pitch_st = params.plain(p_osc(o, OSC_PITCH)) as f32;
+            let detune_ct = self.sm[S_DET0 + o];
+            for k in 0..MAX_UNISON {
+                let spread = if set.voices <= 1 || k >= set.voices {
+                    0.0
+                } else {
+                    k as f32 / (set.voices - 1) as f32 * 2.0 - 1.0
+                };
+                set.ratios[k] = 2.0f32.powf((pitch_st + detune_ct * spread / 100.0) / 12.0);
+            }
+        }
+
         // Per-block discrete values.
-        let osc1_wave = Waveform::from_index((params.normalized(P_O1_WAVE) * 3.0).round() as usize);
-        let osc2_wave = Waveform::from_index((params.normalized(P_O2_WAVE) * 3.0).round() as usize);
         let lfo_wave = Waveform::from_index((params.normalized(P_LFO_WAVE) * 3.0).round() as usize);
-        let osc2_octave = params.plain(P_O2_OCTAVE) as i32;
         let (amp_a, amp_d, amp_s, amp_r) = (
             params.plain(P_AMP_A) as f32,
             params.plain(P_AMP_D) as f32,
@@ -396,12 +456,11 @@ impl Dsp for LanternSynthDsp {
                 *s += (t - *s) * self.coef;
             }
 
+            let mut osc = osc_settings;
+            osc[0].volume = self.sm[S_VOL0];
+            osc[1].volume = self.sm[S_VOL1];
             let vp = VoiceParams {
-                osc1_wave,
-                osc2_wave,
-                osc_mix: self.sm[S_MIX],
-                osc2_detune: self.sm[S_DETUNE],
-                osc2_octave,
+                osc,
                 fm_amount: self.sm[S_FM],
                 cutoff: self.sm[S_CUTOFF],
                 resonance: self.sm[S_RES],

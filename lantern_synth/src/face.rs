@@ -11,7 +11,12 @@ use lantern_ui::lantern_gpu::{Color, Rect};
 use lantern_ui::{Theme, Ui, UiEditor};
 use lantern_vst3::plugin::{Editor, ParamsHandle};
 
-use crate::{M_KEYS, M_LEVEL_L, M_LEVEL_R, M_PEAK_L, M_PEAK_R, M_RMS_L, M_RMS_R, M_UI_NOTE};
+use crate::{
+    p_osc, M_KEYS, M_LEVEL_L, M_LEVEL_R, M_PEAK_L, M_PEAK_R, M_RMS_L, M_RMS_R, M_UI_NOTE,
+    OSC_DETUNE, OSC_ENABLE, OSC_PITCH, OSC_VOICES, OSC_VOLUME, OSC_WAVE,
+};
+
+const WAVE_NAMES: [&str; 4] = ["SIN", "TRI", "SAW", "SQR"];
 
 const WIN_W: u32 = 1496;
 const WIN_H: u32 = 884;
@@ -48,10 +53,10 @@ impl Face {
     fn draw(&mut self, ui: &mut Ui) {
         ui.face();
 
-        // Three rooms across the top: OSC 1 | OSC 2 | FILTER.
-        for i in 0..3 {
-            sub_panel(ui, Rect::new(44.0 + i as f32 * 437.0, 44.0, 406.0, 320.0));
-        }
+        // Three rooms across the top: OSC 1 | OSC 2 | FILTER (still empty).
+        self.osc_panel(ui, Rect::new(44.0, 44.0, 406.0, 420.0), 0);
+        self.osc_panel(ui, Rect::new(481.0, 44.0, 406.0, 420.0), 1);
+        sub_panel(ui, Rect::new(918.0, 44.0, 406.0, 420.0));
 
         // Output meter ends above the keyboard.
         ui.level_meter(
@@ -62,6 +67,30 @@ impl Face {
         );
 
         self.keyboard(ui, Rect::new(44.0, 690.0, 1408.0, 150.0));
+    }
+
+    /// One oscillator room: power square top-left, wave row beside it,
+    /// VOLUME + PITCH knobs, then VOICES stepper with DETUNE alongside.
+    fn osc_panel(&mut self, ui: &mut Ui, r: Rect, o: usize) {
+        let t = ui.theme;
+        sub_panel(ui, r);
+
+        ui.toggle(p_osc(o, OSC_ENABLE), Rect::new(r.x + 12.0, r.y + 12.0, 36.0, 36.0), "");
+        for (w, name) in WAVE_NAMES.iter().enumerate() {
+            ui.choice(
+                p_osc(o, OSC_WAVE),
+                w as i32,
+                Rect::new(r.x + 58.0 + w as f32 * 86.0, r.y + 12.0, 82.0, 36.0),
+                name,
+            );
+        }
+
+        ui.knob_cell(p_osc(o, OSC_VOLUME), Rect::new(r.x + 14.0, r.y + 60.0, 186.0, 190.0), "VOLUME");
+        ui.knob_cell(p_osc(o, OSC_PITCH), Rect::new(r.x + 206.0, r.y + 60.0, 186.0, 190.0), "PITCH");
+
+        ui.label_centered("VOICES", r.x + 107.0, r.y + 260.0, 21.0, t.text_dim);
+        ui.stepper_box(p_osc(o, OSC_VOICES), Rect::new(r.x + 71.0, r.y + 302.0, 72.0, 48.0));
+        ui.knob_cell(p_osc(o, OSC_DETUNE), Rect::new(r.x + 206.0, r.y + 260.0, 186.0, 156.0), "DETUNE");
     }
 
     /// C0..C3, playable: the mouse writes a gate the DSP edge-detects into
@@ -123,7 +152,7 @@ impl Face {
             let r = white_rect(i);
             ui.painter.rect_filled(r, 4.0, Color::from_rgb8(206, 206, 214));
             if lit(white_note(i)) {
-                ui.painter.rect_filled(r, 4.0, t.accent.with_alpha(0.55));
+                ui.painter.rect_filled(r, 4.0, t.cool.with_alpha(0.55));
             }
             if i % 7 == 0 {
                 ui.label(
@@ -140,7 +169,7 @@ impl Face {
                 let r = black_rect(black_x(oct, boundary));
                 ui.painter.rect_filled(r, 4.0, Color::from_rgb8(18, 18, 23));
                 if lit(KB_LOW + oct as u8 * 12 + pc) {
-                    ui.painter.rect_filled(r, 4.0, t.accent.with_alpha(0.65));
+                    ui.painter.rect_filled(r, 4.0, t.cool.with_alpha(0.65));
                 }
                 ui.painter.rect_border(r, 4.0, 2.5, t.panel_border);
             }
