@@ -102,10 +102,24 @@ fn main() {
         println!("wrote {path}");
     }
 
-    // Lantern, three voices deep in a wobble.
+    // Lantern, three voices deep in a wobble, matrix half-plugged: LFO 1
+    // gates O2's volume, LFO 2 rides O1's volume, LFO 3 stirs the res —
+    // chips on the LFO 1 tab, badges on four knobs, comb teeth in the
+    // filter window.
     {
         use lantern_synth as s;
-        let (params, _store, meters) = stage::<s::LanternSynthDsp>();
+        let (params, store, meters) = stage::<s::LanternSynthDsp>();
+        store.set(s::p_mod_src(0), 0.0);
+        store.set(s::p_mod_dest(0), s::D_O2VOL as f64 / 10.0);
+        store.set(s::p_mod_amt(0), 0.725);
+        store.set(s::p_mod_src(1), 0.5);
+        store.set(s::p_mod_dest(1), s::D_O1VOL as f64 / 10.0);
+        store.set(s::p_mod_amt(1), 0.80);
+        store.set(s::p_mod_src(2), 1.0);
+        store.set(s::p_mod_dest(2), s::D_RES as f64 / 10.0);
+        store.set(s::p_mod_amt(2), 0.30);
+        store.set(s::P_LFO_DEPTH, 0.25);
+        store.set(s::P_FLT_TYPE, 1.0); // Comb -
         meters.set(s::M_LEVEL_L, 0.55);
         meters.set(s::M_LEVEL_R, 0.52);
         meters.set(s::M_PEAK_L, 0.82);

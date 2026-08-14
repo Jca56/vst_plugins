@@ -29,7 +29,7 @@ pub const OSC_VOLUME: usize = 2;
 pub const OSC_PITCH: usize = 3;
 pub const OSC_VOICES: usize = 4;
 pub const OSC_DETUNE: usize = 5;
-pub fn p_osc(o: usize, which: usize) -> usize {
+pub const fn p_osc(o: usize, which: usize) -> usize {
     o * 6 + which
 }
 pub const P_FM: usize = 12;
@@ -62,6 +62,48 @@ pub fn p_lfo_step(l: usize, s: usize) -> usize {
 }
 /// Tempo-sync divisions, in beats (4/4): index matches the Rate param.
 pub const LFO_DIV_BEATS: [f64; 8] = [16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125];
+/// Keytracking for the comb filter modes: the comb follows the played note,
+/// the cutoff knob becomes an offset around it (knob center = the note).
+pub const P_FLT_KEYTRACK: usize = 82;
+/// Mod matrix: 8 slots, each source (LFO 1-3) + destination + bipolar amount
+/// (ids 83..=106). A slot whose destination is Off is a free slot.
+pub const MOD_SLOTS: usize = 8;
+pub const fn p_mod_src(s: usize) -> usize {
+    83 + s * 3
+}
+pub const fn p_mod_dest(s: usize) -> usize {
+    84 + s * 3
+}
+pub const fn p_mod_amt(s: usize) -> usize {
+    85 + s * 3
+}
+/// Mod destinations: (target param, face name). Index 0 = not routed.
+/// Amounts act in the target knob's own normalized space — +100% swings the
+/// full knob range — so every destination modulates the way its knob turns.
+pub const MOD_DESTS: [(usize, &str); 11] = [
+    (usize::MAX, "Off"),
+    (p_osc(0, OSC_VOLUME), "O1 VOL"),
+    (p_osc(0, OSC_DETUNE), "O1 DET"),
+    (p_osc(1, OSC_VOLUME), "O2 VOL"),
+    (p_osc(1, OSC_DETUNE), "O2 DET"),
+    (P_FM, "FM"),
+    (P_CUTOFF, "CUTOFF"),
+    (P_RES, "RES"),
+    (P_FENV_AMT, "ENV AMT"),
+    (P_DRIVE, "DRIVE"),
+    (P_GAIN, "GAIN"),
+];
+/// Destination indices into `MOD_DESTS` (DSP + face badge lookups).
+pub const D_O1VOL: usize = 1;
+pub const D_O1DET: usize = 2;
+pub const D_O2VOL: usize = 3;
+pub const D_O2DET: usize = 4;
+pub const D_FM: usize = 5;
+pub const D_CUTOFF: usize = 6;
+pub const D_RES: usize = 7;
+pub const D_FENV: usize = 8;
+pub const D_DRIVE: usize = 9;
+pub const D_GAIN: usize = 10;
 
 /// Meter slots (pub so the preview harness can stage demo values).
 pub const M_LEVEL_L: usize = 0;
@@ -106,7 +148,32 @@ fn lfo_wave_fmt(n: f64) -> String {
 }
 
 fn flt_type_fmt(n: f64) -> String {
-    ["Lowpass", "Bandpass", "Highpass", "Notch"][((n * 3.0).round() as usize).min(3)].to_string()
+    ["Lowpass", "Bandpass", "Highpass", "Notch", "Comb +", "Comb -"]
+        [((n * 5.0).round() as usize).min(5)]
+    .to_string()
+}
+
+fn mod_src_fmt(n: f64) -> String {
+    ["LFO 1", "LFO 2", "LFO 3"][((n * 2.0).round() as usize).min(2)].to_string()
+}
+
+fn mod_dest_fmt(n: f64) -> String {
+    MOD_DESTS[((n * 10.0).round() as usize).min(10)].1.to_string()
+}
+
+fn amt_plain(n: f64) -> f64 {
+    n * 200.0 - 100.0 // bipolar percent of the target knob's full range
+}
+fn amt_norm(p: f64) -> f64 {
+    (p + 100.0) / 200.0
+}
+fn amt_fmt(n: f64) -> String {
+    let p = amt_plain(n).round();
+    if p == 0.0 {
+        "0".to_string()
+    } else {
+        format!("{p:+.0}")
+    }
 }
 
 fn lfo_div_fmt(n: f64) -> String {
@@ -314,7 +381,7 @@ impl Dsp for LanternSynthDsp {
     };
 
     const PARAMS: &'static [ParamDef] = &{
-        let mut all = [BASE_PARAMS[0]; 31 + LFOS * (LFO_STEPS + 1)];
+        let mut all = [BASE_PARAMS[0]; 31 + LFOS * (LFO_STEPS + 1) + 1 + MOD_SLOTS * 3];
         let mut i = 0;
         while i < 31 {
             all[i] = BASE_PARAMS[i];
@@ -358,6 +425,59 @@ impl Dsp for LanternSynthDsp {
             }
             l += 1;
         }
+        all[P_FLT_KEYTRACK] = ParamDef {
+            id: P_FLT_KEYTRACK as u32,
+            title: "Flt Keytrack",
+            short_title: "Flt Keytrack",
+            units: "",
+            default_normalized: 1.0,
+            step_count: 1,
+            can_automate: true,
+            to_plain: None,
+            from_plain: None,
+            format: Some(on_fmt),
+        };
+        let mut m = 0;
+        while m < MOD_SLOTS {
+            let b = p_mod_src(m);
+            all[b] = ParamDef {
+                id: b as u32,
+                title: MOD_TITLES[m][0],
+                short_title: MOD_TITLES[m][0],
+                units: "",
+                default_normalized: 0.0,
+                step_count: 2,
+                can_automate: true,
+                to_plain: None,
+                from_plain: None,
+                format: Some(mod_src_fmt),
+            };
+            all[b + 1] = ParamDef {
+                id: (b + 1) as u32,
+                title: MOD_TITLES[m][1],
+                short_title: MOD_TITLES[m][1],
+                units: "",
+                default_normalized: 0.0,
+                step_count: 10,
+                can_automate: true,
+                to_plain: None,
+                from_plain: None,
+                format: Some(mod_dest_fmt),
+            };
+            all[b + 2] = ParamDef {
+                id: (b + 2) as u32,
+                title: MOD_TITLES[m][2],
+                short_title: MOD_TITLES[m][2],
+                units: "%",
+                default_normalized: 0.5,
+                step_count: 0,
+                can_automate: true,
+                to_plain: Some(amt_plain),
+                from_plain: Some(amt_norm),
+                format: Some(amt_fmt),
+            };
+            m += 1;
+        }
         all
     };
 
@@ -398,6 +518,18 @@ impl Dsp for LanternSynthDsp {
 
 #[rustfmt::skip]
 const LFO_RATE_TITLES: [&str; 3] = ["LFO1 Rate", "LFO2 Rate", "LFO3 Rate"];
+
+#[rustfmt::skip]
+const MOD_TITLES: [[&str; 3]; 8] = [
+    ["Mod1 Src", "Mod1 Dest", "Mod1 Amt"],
+    ["Mod2 Src", "Mod2 Dest", "Mod2 Amt"],
+    ["Mod3 Src", "Mod3 Dest", "Mod3 Amt"],
+    ["Mod4 Src", "Mod4 Dest", "Mod4 Amt"],
+    ["Mod5 Src", "Mod5 Dest", "Mod5 Amt"],
+    ["Mod6 Src", "Mod6 Dest", "Mod6 Amt"],
+    ["Mod7 Src", "Mod7 Dest", "Mod7 Amt"],
+    ["Mod8 Src", "Mod8 Dest", "Mod8 Amt"],
+];
 
 #[rustfmt::skip]
 const LFO_STEP_TITLES: [[&str; 16]; 3] = [
@@ -476,6 +608,7 @@ impl LanternSynthDsp {
     fn reset_impl(&mut self) {
         for v in &mut self.voices {
             *v = Voice::new();
+            v.prepare(self.sample_rate);
         }
         self.lfo_phases = [0.0; LFOS];
         self.snap = true;
@@ -525,33 +658,6 @@ impl LanternSynthDsp {
             self.snap = false;
         }
 
-        // Per-block oscillator settings: pitch + unison detune spread baked
-        // into per-copy frequency ratios (powf lives here, not per sample).
-        let mut osc_settings = [OscSettings {
-            enabled: false,
-            wave: Waveform::Saw,
-            volume: 0.0,
-            voices: 1,
-            ratios: [1.0; MAX_UNISON],
-        }; 2];
-        for (o, set) in osc_settings.iter_mut().enumerate() {
-            set.enabled = params.normalized(p_osc(o, OSC_ENABLE)) >= 0.5;
-            set.wave = Waveform::from_index(
-                (params.normalized(p_osc(o, OSC_WAVE)) * 7.0).round() as usize,
-            );
-            set.voices = (params.plain(p_osc(o, OSC_VOICES)) as usize).clamp(1, MAX_UNISON);
-            let pitch_oct = params.plain(p_osc(o, OSC_PITCH)) as f32;
-            let detune_ct = self.sm[S_DET0 + o];
-            for k in 0..MAX_UNISON {
-                let spread = if set.voices <= 1 || k >= set.voices {
-                    0.0
-                } else {
-                    k as f32 / (set.voices - 1) as f32 * 2.0 - 1.0
-                };
-                set.ratios[k] = 2.0f32.powf(pitch_oct + detune_ct * spread / 1200.0);
-            }
-        }
-
         // Step LFOs: tempo-synced, beat-locked to the song position while
         // playing (so a 1-bar wobble lands ON the bar), free-running at the
         // last known tempo otherwise.
@@ -568,11 +674,76 @@ impl LanternSynthDsp {
             }
             lfo_inc[l] = self.tempo / 60.0 / beats / self.sample_rate as f64;
         }
+        let shape_at = |steps: &[f32; LFO_STEPS], phase: f64| -> f32 {
+            let ph = phase as f32 * LFO_STEPS as f32;
+            let i0 = (ph as usize) % LFO_STEPS;
+            let i1 = (i0 + 1) % LFO_STEPS;
+            steps[i0] + (steps[i1] - steps[i0]) * ph.fract()
+        };
+
+        // The mod matrix: live slots as (source LFO, destination, amount).
+        // The drawn shape reads bipolar (half-height = no change) and the
+        // amount is a fraction of the destination knob's full range.
+        let mut routes = [(0usize, 0usize, 0.0f32); MOD_SLOTS];
+        let mut nroutes = 0usize;
+        for s in 0..MOD_SLOTS {
+            let dest = ((params.normalized(p_mod_dest(s)) * 10.0).round() as usize).min(10);
+            if dest == 0 {
+                continue;
+            }
+            let amt = (params.normalized(p_mod_amt(s)) * 2.0 - 1.0) as f32;
+            if amt.abs() < 0.005 {
+                continue;
+            }
+            let src = ((params.normalized(p_mod_src(s)) * 2.0).round() as usize).min(LFOS - 1);
+            routes[nroutes] = (src, dest, amt);
+            nroutes += 1;
+        }
+
+        // Detune mod applies per block: unison ratios are per-block anyway
+        // (each ratio is a powf — per-sample would melt the budget).
+        let mut det_off = [0.0f32; 2];
+        for &(src, dest, amt) in &routes[..nroutes] {
+            let bip = shape_at(&lfo_steps[src], self.lfo_phases[src]) * 2.0 - 1.0;
+            if dest == D_O1DET {
+                det_off[0] += bip * amt * 100.0;
+            } else if dest == D_O2DET {
+                det_off[1] += bip * amt * 100.0;
+            }
+        }
+
+        // Per-block oscillator settings: pitch + unison detune spread baked
+        // into per-copy frequency ratios (powf lives here, not per sample).
+        let mut osc_settings = [OscSettings {
+            enabled: false,
+            wave: Waveform::Saw,
+            volume: 0.0,
+            voices: 1,
+            ratios: [1.0; MAX_UNISON],
+        }; 2];
+        for (o, set) in osc_settings.iter_mut().enumerate() {
+            set.enabled = params.normalized(p_osc(o, OSC_ENABLE)) >= 0.5;
+            set.wave = Waveform::from_index(
+                (params.normalized(p_osc(o, OSC_WAVE)) * 7.0).round() as usize,
+            );
+            set.voices = (params.plain(p_osc(o, OSC_VOICES)) as usize).clamp(1, MAX_UNISON);
+            let pitch_oct = params.plain(p_osc(o, OSC_PITCH)) as f32;
+            let detune_ct = (self.sm[S_DET0 + o] + det_off[o]).clamp(0.0, 100.0);
+            for k in 0..MAX_UNISON {
+                let spread = if set.voices <= 1 || k >= set.voices {
+                    0.0
+                } else {
+                    k as f32 / (set.voices - 1) as f32 * 2.0 - 1.0
+                };
+                set.ratios[k] = 2.0f32.powf(pitch_oct + detune_ct * spread / 1200.0);
+            }
+        }
 
         // Per-block discrete values.
         let flt_on = params.normalized(P_FLT_ON) >= 0.5;
         let flt_mode =
-            FilterMode::from_index((params.normalized(P_FLT_TYPE) * 3.0).round() as usize);
+            FilterMode::from_index((params.normalized(P_FLT_TYPE) * 5.0).round() as usize);
+        let keytrack = params.normalized(P_FLT_KEYTRACK) >= 0.5;
         let (amp_a, amp_d, amp_s, amp_r) = (
             params.plain(P_AMP_A) as f32,
             params.plain(P_AMP_D) as f32,
@@ -611,11 +782,12 @@ impl LanternSynthDsp {
             let mut osc = osc_settings;
             osc[0].volume = self.sm[S_VOL0];
             osc[1].volume = self.sm[S_VOL1];
-            let vp = VoiceParams {
+            let mut vp = VoiceParams {
                 osc,
                 fm_amount: self.sm[S_FM],
                 flt_on,
                 flt_mode,
+                keytrack,
                 cutoff: self.sm[S_CUTOFF],
                 resonance: self.sm[S_RES],
                 filt_env_oct: self.sm[S_FENV],
@@ -631,17 +803,38 @@ impl LanternSynthDsp {
                 sr,
             };
 
-            // LFO 1 drives the wobble (shared across voices); all three
-            // advance so their playheads stay honest.
-            let lfo_value = {
-                let ph = self.lfo_phases[0] as f32 * LFO_STEPS as f32;
-                let i0 = (ph as usize) % LFO_STEPS;
-                let i1 = (i0 + 1) % LFO_STEPS;
-                let v = lfo_steps[0][i0] + (lfo_steps[0][i1] - lfo_steps[0][i0]) * ph.fract();
-                v * 2.0 - 1.0
-            };
+            // All three LFO shapes, per sample; LFO 1 doubles as the classic
+            // hardwired wobble (the DEPTH knob).
+            let mut shp = [0.0f32; LFOS];
             for l in 0..LFOS {
+                shp[l] = shape_at(&lfo_steps[l], self.lfo_phases[l]);
                 self.lfo_phases[l] = (self.lfo_phases[l] + lfo_inc[l]).fract();
+            }
+            let lfo_value = shp[0] * 2.0 - 1.0;
+
+            // Matrix offsets, accumulated per destination in knob space.
+            let mut drive = self.sm[S_DRIVE];
+            let mut gain = self.sm[S_GAIN];
+            if nroutes > 0 {
+                let mut off = [0.0f32; 11];
+                for &(src, dest, amt) in &routes[..nroutes] {
+                    off[dest] += (shp[src] * 2.0 - 1.0) * amt;
+                }
+                vp.osc[0].volume = (vp.osc[0].volume + off[D_O1VOL]).clamp(0.0, 1.0);
+                vp.osc[1].volume = (vp.osc[1].volume + off[D_O2VOL]).clamp(0.0, 1.0);
+                vp.fm_amount = (vp.fm_amount + off[D_FM]).clamp(0.0, 1.0);
+                if off[D_CUTOFF] != 0.0 {
+                    // The cutoff knob is log over ~10 octaves (20 Hz..20 kHz):
+                    // full amount swings the whole knob, in octaves.
+                    vp.cutoff *= 2.0f32.powf(off[D_CUTOFF] * 9.9658);
+                }
+                vp.resonance = (vp.resonance + off[D_RES]).clamp(0.0, 1.0);
+                vp.filt_env_oct = (vp.filt_env_oct + off[D_FENV] * 8.0).clamp(0.0, 8.0);
+                drive = (drive + off[D_DRIVE]).clamp(0.0, 1.0);
+                if off[D_GAIN] != 0.0 {
+                    // Gain knob spans 60 dB; mod moves it in dB.
+                    gain *= 10.0f32.powf(off[D_GAIN] * 3.0);
+                }
             }
 
             let mut sum = 0.0;
@@ -650,7 +843,7 @@ impl LanternSynthDsp {
             }
 
             // Soft-clip (drive) then output gain; tanh keeps it bounded.
-            let out = (sum * (1.0 + self.sm[S_DRIVE] * 24.0)).tanh() * self.sm[S_GAIN];
+            let out = (sum * (1.0 + drive * 24.0)).tanh() * gain;
 
             ch_l[i] = out;
             if let Some(ch_r) = ch_r.as_mut() {

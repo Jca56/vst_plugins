@@ -57,6 +57,9 @@ pub struct VoiceParams {
     pub fm_amount: f32,
     pub flt_on: bool,
     pub flt_mode: FilterMode,
+    /// Comb modes only: tune the comb to the played note (the cutoff knob
+    /// becomes an offset around it — knob center = the note itself).
+    pub keytrack: bool,
     pub cutoff: f32,
     pub resonance: f32,
     pub filt_env_oct: f32,
@@ -81,6 +84,7 @@ pub struct Voice {
     pub amp_env: Adsr,
     pub flt_env: Adsr,
     filter: Svf,
+    comb: Comb,
 }
 
 impl Voice {
@@ -94,7 +98,14 @@ impl Voice {
             amp_env: Adsr::new(),
             flt_env: Adsr::new(),
             filter: Svf::new(),
+            comb: Comb::new(),
         }
+    }
+
+    /// Size the comb's delay line for this sample rate. Must run before
+    /// processing; a comb with no buffer passes audio through dry.
+    pub fn prepare(&mut self, sr: f32) {
+        self.comb.alloc(sr);
     }
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {
@@ -111,6 +122,7 @@ impl Voice {
             }
         }
         self.filter.reset();
+        self.comb.reset();
         self.amp_env.trigger();
         self.flt_env.trigger();
     }
@@ -159,13 +171,34 @@ impl Voice {
         // Cutoff modulated in octaves (musical) by filter env + global LFO.
         let filtered = if p.flt_on {
             let mod_oct = p.filt_env_oct * fenv + p.lfo_oct * lfo_value;
-            let cutoff = (p.cutoff * 2.0f32.powf(mod_oct)).clamp(20.0, p.sr * 0.45);
-            let (lp, bp, hp) = self.filter.process(mixed, cutoff, p.resonance, p.sr);
             match p.flt_mode {
-                FilterMode::Lowpass => lp,
-                FilterMode::Bandpass => bp,
-                FilterMode::Highpass => hp,
-                FilterMode::Notch => lp + hp,
+                FilterMode::CombPlus | FilterMode::CombMinus => {
+                    // Comb pitch: the cutoff knob, or — keytracked — the
+                    // note itself with the knob as an offset (632 Hz, the
+                    // knob's center, = played pitch). Env + wobble sweep it
+                    // in octaves, same as the SVF's cutoff.
+                    let tuned = if p.keytrack {
+                        base * (p.cutoff / 632.45)
+                    } else {
+                        p.cutoff
+                    };
+                    let f = (tuned * 2.0f32.powf(mod_oct)).clamp(25.0, p.sr * 0.45);
+                    let g = 0.98 * p.resonance.clamp(0.0, 1.0);
+                    let g = if p.flt_mode == FilterMode::CombMinus { -g } else { g };
+                    // Feedback comb rings up to 1/(1-g); pull it back so
+                    // high resonance stays hot but not obliterating.
+                    self.comb.process(mixed, p.sr / f, g) * (1.0 - 0.55 * g.abs())
+                }
+                _ => {
+                    let cutoff = (p.cutoff * 2.0f32.powf(mod_oct)).clamp(20.0, p.sr * 0.45);
+                    let (lp, bp, hp) = self.filter.process(mixed, cutoff, p.resonance, p.sr);
+                    match p.flt_mode {
+                        FilterMode::Lowpass => lp,
+                        FilterMode::Bandpass => bp,
+                        FilterMode::Highpass => hp,
+                        _ => lp + hp,
+                    }
+                }
             }
         } else {
             mixed
@@ -289,6 +322,12 @@ pub enum FilterMode {
     Bandpass,
     Highpass,
     Notch,
+    /// Feedback comb, positive: peaks on the harmonic series — metallic,
+    /// stringy resonance (Serum's Cmb+ flavor).
+    CombPlus,
+    /// Feedback comb, negative: peaks between the harmonics — hollow,
+    /// vowely, the talking-bass one.
+    CombMinus,
 }
 
 impl FilterMode {
@@ -297,8 +336,59 @@ impl FilterMode {
             0 => Self::Lowpass,
             1 => Self::Bandpass,
             2 => Self::Highpass,
-            _ => Self::Notch,
+            3 => Self::Notch,
+            4 => Self::CombPlus,
+            _ => Self::CombMinus,
         }
+    }
+}
+
+// --- Feedback comb: y[n] = x[n] + g * y[n - D], fractional D ---
+
+/// One tuned delay line with feedback. `D = sr / freq` puts resonant peaks
+/// at every multiple of `freq` (g > 0) or halfway between them (g < 0) —
+/// keytracked, that's a played-pitch resonator ringing over the oscillators.
+pub struct Comb {
+    buf: Vec<f32>,
+    w: usize,
+}
+
+impl Comb {
+    pub fn new() -> Self {
+        Self { buf: Vec::new(), w: 0 }
+    }
+
+    /// Size for the lowest comb pitch (25 Hz) at this sample rate.
+    pub fn alloc(&mut self, sr: f32) {
+        let n = (sr / 25.0) as usize + 8;
+        if self.buf.len() != n {
+            self.buf = vec![0.0; n];
+        }
+        self.w = 0;
+    }
+
+    pub fn reset(&mut self) {
+        self.buf.iter_mut().for_each(|x| *x = 0.0);
+        self.w = 0;
+    }
+
+    /// One sample through the comb; `delay` in samples (fractional, linear
+    /// interp). Unprepared combs pass through dry.
+    pub fn process(&mut self, x: f32, delay: f32, g: f32) -> f32 {
+        let n = self.buf.len();
+        if n < 8 {
+            return x;
+        }
+        let d = delay.clamp(2.0, (n - 3) as f32);
+        let rp = self.w as f32 - d + n as f32;
+        let i0 = rp as usize;
+        let frac = rp - i0 as f32;
+        let s0 = self.buf[i0 % n];
+        let s1 = self.buf[(i0 + 1) % n];
+        let y = x + g * (s0 + (s1 - s0) * frac);
+        self.buf[self.w] = y;
+        self.w = (self.w + 1) % n;
+        y
     }
 }
 
