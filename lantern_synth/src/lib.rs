@@ -53,6 +53,11 @@ pub const M_RMS_L: usize = 4;
 pub const M_RMS_R: usize = 5;
 /// Active voice count, for the face.
 pub const M_VOICES: usize = 6;
+/// Bitmask of sounding pitch classes (bit 0 = C), for the face keyboard.
+pub const M_KEYS: usize = 7;
+/// UI keyboard gate, written by the editor: note+1 while a key is held,
+/// 0 when released. The DSP edge-detects it into note on/off.
+pub const M_UI_NOTE: usize = 8;
 
 // ============================================================================
 // Parameter mappings
@@ -191,6 +196,8 @@ pub struct LanternSynthDsp {
     env_decay: f32,
     ms_l: f32,
     ms_coef: f32,
+    /// Last seen UI-keyboard gate (note+1, 0 = none), for edge detection.
+    ui_note_prev: i32,
 }
 
 /// Indices into the smoother array.
@@ -269,7 +276,7 @@ impl Dsp for LanternSynthDsp {
         p!(21, "Gain",       "dB",  0.9,    0, Some(gain_plain), Some(gain_norm), Some(gain_fmt)),
     ];
 
-    const METERS: usize = 7;
+    const METERS: usize = 9;
     const EDITOR: Option<EditorFactory> = Some(face::make_editor);
     const IS_INSTRUMENT: bool = true;
 
@@ -285,6 +292,7 @@ impl Dsp for LanternSynthDsp {
             env_decay: 1.0,
             ms_l: 0.0,
             ms_coef: 0.0,
+            ui_note_prev: 0,
         }
     }
 
@@ -305,6 +313,7 @@ impl Dsp for LanternSynthDsp {
         self.snap = true;
         self.env_l = 0.0;
         self.ms_l = 0.0;
+        self.ui_note_prev = 0;
     }
 
     fn process_with_events(
@@ -315,6 +324,18 @@ impl Dsp for LanternSynthDsp {
         meters: &MeterStore,
     ) {
         let sr = self.sample_rate;
+
+        // The editor's mini keyboard: edge-detect the gate slot into notes.
+        let ui_gate = meters.get(M_UI_NOTE) as i32;
+        if ui_gate != self.ui_note_prev {
+            if self.ui_note_prev > 0 {
+                self.note_off((self.ui_note_prev - 1).clamp(0, 127) as u8);
+            }
+            if ui_gate > 0 {
+                self.note_on((ui_gate - 1).clamp(0, 127) as u8, 0.9);
+            }
+            self.ui_note_prev = ui_gate;
+        }
 
         // Per-block targets for the smoothed continuous controls.
         let targets = [
@@ -430,6 +451,11 @@ impl Dsp for LanternSynthDsp {
             M_VOICES,
             self.voices.iter().filter(|v| v.active).count() as f64,
         );
+        let mut key_mask = 0u32;
+        for v in self.voices.iter().filter(|v| v.active) {
+            key_mask |= 1 << (v.note % 12);
+        }
+        meters.set(M_KEYS, key_mask as f64);
     }
 }
 

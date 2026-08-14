@@ -113,6 +113,8 @@ fn main() {
         meters.set(s::M_RMS_L, 0.34);
         meters.set(s::M_RMS_R, 0.32);
         meters.set(s::M_VOICES, 3.0);
+        // Light C and G on the mini keyboard.
+        meters.set(s::M_KEYS, (1u32 | 1 << 7) as f64);
         let path = format!("{out}/synth.png");
         preview::render_png(1360, 884, &theme, params, 90, &path, s::preview_face())
             .expect("render synth");
